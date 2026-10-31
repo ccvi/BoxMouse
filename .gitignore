@@ -1,0 +1,25 @@
+# ---- BoxMouse ----
+.DS_Store
+._*
+
+# 编译产物与中间物：体积大且可重建，不进版本库
+.build/
+.swiftpm/
+dist/
+*.app
+DerivedData/
+
+# 🔴 VERSION 与 VERSION.fingerprint **必须入库**。
+# 它们不进版本库的话，新克隆一份就会凭空多涨一个版本号——
+# build-app.sh 按"源码指纹 vs 上次打包的指纹"决定是否递增，指纹文件丢了
+# 就等于每次都是首次打包。见 build-app.sh 里「关于版本号」一节。
+
+# 工具侧会话数据（会话记录、工作日志），不是项目产物。
+# 需要沉淀的决策写进 README / 提交信息。
+.workbuddy/
+
+# 运行数据与日志
+*.log
+
+# 临时
+/tmp/

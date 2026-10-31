@@ -1,0 +1,399 @@
+import AppKit
+import CoreGraphics
+
+// ============================================================
+// 手势引擎：CGEventTap 的安装与状态机
+//
+// 三条硬规则（踩过就知道疼）：
+//
+// 1) **没认出任何手势时必须把事件原样放行。**
+//    吞掉右键会让所有应用的右键菜单失效——这是这类工具最容易造成
+//    "装完就后悔"的故障。所以起手前先算一遍候选，空集就直接 return 原事件。
+//    修饰键也算在候选条件里：只建了「⌘ + 右键画 L」时，裸右键照样能弹菜单。
+//
+// 2) **短距离拖拽要当点击重放。**
+//    右键按下→抖动几像素→松开，用户的本意是"右键单击"。我们已经在
+//    down 时把事件吞了，就必须自己补发一次完整的 down/up，否则菜单再也不弹。
+//
+// 3) **修饰键只在起手那一刻判一次。**
+//    起手时事件带什么修饰键就按那套候选走，中途再按/松修饰键不改判定，
+//    否则用户画到一半松开 ⌘ 就会突然换成另一条手势。收手时也用起手时记下的集合。
+// ============================================================
+
+private struct DrawState {
+    var trigger: GestureTrigger
+    /// 起手瞬间按住的修饰键（空集 = 无）
+    var modifiers: Set<ModifierKey>
+    var points: [CGPoint]
+    var start: CGPoint
+    var buttonNumber: Int64
+    var context: TargetContext
+}
+
+@MainActor
+final class GestureEngine {
+
+    private let store: GestureStore
+    private var tap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private var draw: DrawState?
+    private let overlay = TrailOverlay()
+    /// 浮层是否已经真正显示（延迟到开始画才创建，见 append）
+    private var trailVisible = false
+
+    /// 供界面显示「引擎当前是否真的在监听」
+    private(set) var isRunning = false
+
+    /// 键盘监听是否挂上了。
+    ///
+    /// 键盘事件需要「输入监控」授权，而鼠标事件只要「辅助功能」。没给输入监控时
+    /// tapCreate 会连鼠标一起失败——退化成只监听鼠标，至少保住主功能，
+    /// 并且要能让界面说清"快捷键为什么不灵"。
+    private(set) var keyboardTapAvailable = true
+
+    /// 一轮手势的结局。鼠标手势和触摸板手势走同一套，界面据此弹提示。
+    enum FireOutcome: Equatable {
+        /// 认出来了，动作也发出去了
+        case matched(Gesture)
+        /// 认出来了，但动作没执行成功（比如窗口已经不在、应用被删了）
+        case failed(Gesture)
+        /// 画了，但不像任何一条
+        case unmatched
+    }
+
+    /// 每轮手势结束回调一次。不直接发布状态：引擎是纯逻辑对象，
+    /// 界面订阅（以及要不要弹提示）由 AppModel 负责。
+    var onResult: ((FireOutcome) -> Void)?
+
+    init(store: GestureStore) {
+        self.store = store
+    }
+
+    // MARK: - 生命周期
+
+    func sync() {
+        if store.settings.engineEnabled && Permissions.hasAccessibility {
+            start()
+        } else {
+            stop()
+        }
+    }
+
+    func start() {
+        guard tap == nil else { return }
+        guard Permissions.hasAccessibility else {
+            isRunning = false
+            return
+        }
+
+        // 只监听鼠标键 + 键盘按下（跑快捷键）。修饰键（flagsChanged）和 pointer
+        // 移动（mouseMoved）不再需要：修饰键改成起手时读事件自带的 flags，
+        // 鼠标移动只在新手势起手后才追加。少挂高频事件，对输入延迟更友好。
+        var types: [CGEventType] = [
+            .rightMouseDown, .rightMouseDragged, .rightMouseUp,
+            .otherMouseDown, .otherMouseDragged, .otherMouseUp,
+            // 快捷键条目要匹配全局按键。键盘事件量远小于 pointer 移动，
+            // 而且先查"有没有配快捷键"，没有就直接放行，不会给打字增加延迟。
+            .keyDown
+        ]
+
+        var created = makeTap(types)
+        var keyboard = true
+        if created == nil, types.contains(.keyDown) {
+            // 键盘 tap 要「输入监控」。没授权时整只 tap 都建不起来，
+            // 会连鼠标手势一起废掉——退化成只监听鼠标，先保住主功能。
+            types.removeAll { $0 == .keyDown }
+            created = makeTap(types)
+            keyboard = false
+        }
+        guard let created else {
+            isRunning = false
+            keyboardTapAvailable = false
+            return
+        }
+        keyboardTapAvailable = keyboard
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: created, enable: true)
+
+        self.tap = created
+        self.runLoopSource = source
+        self.isRunning = true
+    }
+
+    private func makeTap(_ types: [CGEventType]) -> CFMachPort? {
+        var mask: CGEventMask = 0
+        for type in types {
+            mask |= (1 << type.rawValue)
+        }
+        return CGEvent.tapCreate(tap: .cgSessionEventTap,
+                                 place: .headInsertEventTap,
+                                 options: .defaultTap,
+                                 eventsOfInterest: mask,
+                                 callback: gestureTapCallback,
+                                 userInfo: Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    func stop() {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+            }
+            CFMachPortInvalidate(tap)
+        }
+        tap = nil
+        runLoopSource = nil
+        isRunning = false
+        cancel()
+    }
+
+    // MARK: - 事件处理
+
+    func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        let passthrough = Unmanaged<CGEvent>.passUnretained(event)
+
+        // 🔴 自己重放的事件必须放行，否则死循环：
+        // 短点击 → finish() → replayClick 补发 down/up → 事件流经 session tap
+        // （我们挂在最上游）→ 又被自己吞掉 → 又判定成短点击 → 又重放……
+        // 表现就是：点击点红点狂闪、鼠标卡到没法用，直到 tap 回调超时被系统禁用。
+        // 重放时打了 eventSourceUserData 标记（见 replayClick），见到标记直接放行。
+        if event.getIntegerValueField(.eventSourceUserData) == Self.replayMark {
+            return passthrough
+        }
+
+        // 系统会因回调超时/用户输入临时禁用 tap，必须自己开回来，
+        // 否则手势会"安静地"失效——不报错、不弹窗，最难查。
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return passthrough
+        }
+
+        guard store.settings.engineEnabled else { return passthrough }
+
+        switch type {
+        case .rightMouseDown:
+            return begin(trigger: .rightButton, buttonNumber: 1, event: event) ? nil : passthrough
+
+        case .otherMouseDown:
+            let number = event.getIntegerValueField(.mouseEventButtonNumber)
+            let trigger: GestureTrigger = number == 2 ? .middleButton : .sideButton
+            return begin(trigger: trigger, buttonNumber: number, event: event) ? nil : passthrough
+
+        case .rightMouseDragged, .otherMouseDragged:
+            guard draw != nil else { return passthrough }
+            append(event.location)
+            return nil
+
+        case .rightMouseUp:
+            // 必须同一颗键松开才算画完：中键手势期间顺手点一下右键，
+            // 不该把正在画的中键手势提前收掉。
+            guard let state = draw, state.buttonNumber == 1 else {
+                return passthrough
+            }
+            finish()
+            return nil
+
+        case .otherMouseUp:
+            let number = event.getIntegerValueField(.mouseEventButtonNumber)
+            guard let state = draw, state.buttonNumber == number else {
+                return passthrough
+            }
+            finish()
+            return nil
+
+        case .keyDown:
+            return handleKeyDown(event) ? nil : passthrough
+
+        default:
+            return passthrough
+        }
+    }
+
+    /// 键盘按键 → 快捷键条目。
+    ///
+    /// 返回 true 表示"这条事件归我们了"，调用方会把事件吞掉，不再传给当前应用——
+    /// 全局快捷键本来就该独占，不然按完还会往输入框里打出一个字符。
+    private func handleKeyDown(_ event: CGEvent) -> Bool {
+        guard store.settings.engineEnabled else { return false }
+        // 编辑器正在录制组合键：这一下是"给我听"，不是"给我执行"
+        guard !ShortcutCapture.isRecording else { return false }
+        // 长按会连发 keyDown，只认第一次
+        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 { return false }
+
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let front = NSWorkspace.shared.frontmostApplication
+
+        guard let gesture = store.shortcutMatch(keyCode: keyCode,
+                                                flags: event.flags,
+                                                bundleID: front?.bundleIdentifier) else {
+            return false
+        }
+
+        // 快捷键作用于"当前正在用的应用"，没有起手窗口这回事
+        let context = TargetContext(bundleID: front?.bundleIdentifier,
+                                    pid: front?.processIdentifier,
+                                    window: nil)
+        let didRun = ActionRunner.shared.perform(gesture.action, context: context)
+        onResult?(didRun ? .matched(gesture) : .failed(gesture))
+        return true
+    }
+
+    // MARK: - 起手 / 采集 / 收尾
+
+    private func begin(trigger: GestureTrigger, buttonNumber: Int64, event: CGEvent) -> Bool {
+        guard draw == nil else { return false }
+
+        // 修饰键从这次 down 事件自带的 flags 里读：用户按住 Fn 再按右键时，
+        // ⌘⌥⌃⇧fn 的状态已经在 flags 里了，不需要自己维护按键状态机。
+        let modifiers = ModifierKey.set(from: event.flags)
+
+        // 先解析目标应用：作用域可能让当前应用一条手势都没有，
+        // 那就别吞事件（否则右键菜单直接废掉）。
+        let point = event.location
+        let context = TargetResolver.resolve(mode: store.settings.targetMode,
+                                             point: point,
+                                             lockWindow: store.settings.lockWindow)
+        if store.settings.skipOwnWindow, context.bundleID == Bundle.main.bundleIdentifier {
+            return false
+        }
+        let candidates = store.candidates(trigger: trigger,
+                                          modifiers: modifiers,
+                                          bundleID: context.bundleID)
+        guard !candidates.isEmpty else { return false }
+
+        draw = DrawState(trigger: trigger,
+                         modifiers: modifiers,
+                         points: [point],
+                         start: point,
+                         buttonNumber: buttonNumber,
+                         context: context)
+
+        // 浮层不在这里显示：右键单击（只点菜单）不该闪一下红点，
+        // 等真的拖出轨迹再创建，见 append(_:)
+        trailVisible = false
+        return true
+    }
+
+    private func append(_ point: CGPoint) {
+        guard var state = draw else { return }
+        if let last = state.points.last,
+           hypot(point.x - last.x, point.y - last.y) < 2 {
+            return
+        }
+        state.points.append(point)
+        draw = state
+
+        // 🔴 浮层延迟到「真的开始画」才出现（离起点超过 6pt）。
+        // 以前一按下就 show 一个直径 12pt 的大红圆点：右键单击点菜单也会闪一下，
+        // 用户反馈"很突兀"。现在单击全程没有浮层，画起来的第一帧就是线段本身；
+        // 顺带省掉单击时一次全屏窗口的创建与挂载。
+        if !trailVisible {
+            let travel = hypot(point.x - state.start.x, point.y - state.start.y)
+            guard travel >= 6, store.settings.showTrail else { return }
+            trailVisible = true
+            overlay.show(at: state.start,
+                         color: NSColor(hexString: store.settings.trailColorHex) ?? .systemRed,
+                         width: store.settings.trailWidth)
+            // 补上延迟期间已经走过的点，否则第一笔会从半截开始
+            for pending in state.points.dropFirst() {
+                overlay.append(pending)
+            }
+            return
+        }
+        overlay.append(point)
+    }
+
+    private func cancel() {
+        draw = nil
+        trailVisible = false
+        overlay.hide()
+    }
+
+    private func finish() {
+        guard let state = draw else { return }
+        draw = nil
+        trailVisible = false
+        overlay.hide()
+
+        let length = PathRecognizer.length(state.points)
+        guard length >= store.settings.minPathLength else {
+            // 当成一次普通点击重放：右键菜单、中键粘贴都还照常工作
+            replayClick(state)
+            return
+        }
+
+        let normalized = PathRecognizer.normalize(state.points)
+        let candidates = store
+            .candidates(trigger: state.trigger,
+                        modifiers: state.modifiers,
+                        bundleID: state.context.bundleID)
+            .filter { !$0.path.isEmpty }
+            .map { (gesture: $0, path: $0.path) }
+
+        guard let match = PathRecognizer.bestMatch(path: normalized, candidates: candidates) else {
+            onResult?(.unmatched)
+            return
+        }
+        // 应用/分组作用域的手势：目标应用可能不在前台（指针压在它上面而已），
+        // 键盘类动作必须先把它激活，否则 ⌘T 之类会打进当前前台应用。
+        var context = state.context
+        context.activatesTarget = TargetResolver.needsActivation(
+            targetPID: context.pid,
+            frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            scopeIsGlobal: store.scope(id: match.gesture.scopeID)?.kind == .global)
+        let didRun = ActionRunner.shared.perform(match.gesture.action, context: context)
+        onResult?(didRun ? .matched(match.gesture) : .failed(match.gesture))
+    }
+
+    /// 重放事件的标记值（"BM" = BoxMouse）。
+    /// 写进 eventSourceUserData，tap 回调里见到它就知道是自己重放的，直接放行。
+    /// 没有这个标记，重放事件会再进一次自己的 tap，短点击就变成死循环。
+    static let replayMark: Int64 = 0x424D
+
+    /// 补发被我们吞掉的那次点击
+    private func replayClick(_ state: DrawState) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let isRight = state.trigger == .rightButton
+        let button: CGMouseButton = isRight ? .right : .center
+
+        let down = CGEvent(mouseEventSource: source,
+                           mouseType: isRight ? .rightMouseDown : .otherMouseDown,
+                           mouseCursorPosition: state.start,
+                           mouseButton: button)
+        let up = CGEvent(mouseEventSource: source,
+                         mouseType: isRight ? .rightMouseUp : .otherMouseUp,
+                         mouseCursorPosition: state.start,
+                         mouseButton: button)
+        // other 事件必须显式带按键号（中键=2，侧键=3/4），否则系统当成第 0 号键
+        down?.setIntegerValueField(.mouseEventButtonNumber, value: state.buttonNumber)
+        up?.setIntegerValueField(.mouseEventButtonNumber, value: state.buttonNumber)
+        // 修饰键要还原：用户按住 ⌘ 右键点击时，候选是「⌘ + 右键」那几条，
+        // 重放出去的也是一次 ⌘ + 右键点击，语义才一致。
+        var flags: CGEventFlags = []
+        for modifier in state.modifiers { flags.insert(modifier.flag) }
+        down?.flags = flags
+        up?.flags = flags
+        // 🔴 打上"自己人"标记：tap 回调里凭这个放行，见 handle() 的说明。
+        // 没有它，这次 down/up 会再次被自己的 tap 吞掉——红点狂闪、鼠标卡死。
+        down?.setIntegerValueField(.eventSourceUserData, value: Self.replayMark)
+        up?.setIntegerValueField(.eventSourceUserData, value: Self.replayMark)
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
+}
+
+// MARK: - C 回调桥
+
+private func gestureTapCallback(proxy: CGEventTapProxy,
+                                type: CGEventType,
+                                event: CGEvent,
+                                userInfo: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+    guard let userInfo else { return Unmanaged.passUnretained(event) }
+    let engine = Unmanaged<GestureEngine>.fromOpaque(userInfo).takeUnretainedValue()
+    // 回调跑在装 tap 的那个线程（主线程）的 run loop 上
+    return MainActor.assumeIsolated {
+        engine.handle(type: type, event: event)
+    }
+}

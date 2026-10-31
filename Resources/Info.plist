@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  BoxMouse 的 Info.plist 模板。
+  版本号占位符由 build-app.sh 用 VERSION 文件替换，写死就会和 VERSION 各说各话。
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>BoxMouse</string>
+	<key>CFBundleExecutable</key>
+	<string>BoxMouse</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<!--
+	  bundle id 换过一次：老的 com.pcxx.boxmouse 状态栏登记被烧掉了
+	  （绕过 LaunchServices 直接 exec .app 里的二进制，这个 id 的菜单栏登记
+	  就永久失效——状态项 frame 报告正常、isVisible=true，屏幕上就是不出现）。
+	  唯一有效修法是换 id，详见 docs 里的菜单栏排查备忘。
+	-->
+	<key>CFBundleIdentifier</key>
+	<string>com.pcxx.boxmousemac</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh_CN</string>
+		<string>en</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>BoxMouse</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__BOXMOUSE_VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__BOXMOUSE_BUILD__</string>
+
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>BoxMouse —— 鼠标手势自动化工具 · 作者 ccvi1223</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<!--
+	  false = 启动时是有 Dock 图标的普通应用。
+	  用户勾了「隐藏 Dock 图标」之后，运行时靠 NSApp.setActivationPolicy(.accessory)
+	  切走，下一版会在这里读存档再定策略（存档读取早于建窗口，来不及）。
+
+	  ⚠️ 不要改成 true：那样第一次启动就没有 Dock 图标，
+	  而"隐藏 Dock"是默认关闭的开关，会对不上。
+	-->
+	<key>LSUIElement</key>
+	<false/>
+
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+</dict>
+</plist>
