@@ -7,7 +7,8 @@ import AppKit
 // 定位：**看一眼 + 一两个开关**。不是把主窗口塞进弹窗——
 // 手势库的搜索、筛选、批量操作只在主窗口做。
 //
-// 所以这里只放三块：在不在工作（总开关 + 状态）、有多少条手势、
+// 所以这里只放四块：在不在工作（总开关 + 状态）、有多少条手势、
+// 三个系统开关（隐藏桌面图标 / 显示隐藏文件 / 锁定键盘）、
 // 以及去主窗口的入口。
 //
 // 最后一块是隐藏 Dock 图标之后的"唯一出路"，不能漏。
@@ -17,6 +18,8 @@ import AppKit
 
 struct MenuBarPanel: View {
     @ObservedObject var model: AppModel
+    /// 三个系统开关的现场状态（真相在系统里，每次显示浮窗前重读）
+    @ObservedObject var toggles: SystemTogglesModel
     /// 点"打开主窗口/设置/退出"时由控制器收起浮窗
     var onClose: () -> Void = {}
 
@@ -33,6 +36,8 @@ struct MenuBarPanel: View {
                 rule
             }
             statsRow
+            rule
+            systemRows
             rule
             footer
         }
@@ -136,6 +141,67 @@ struct MenuBarPanel: View {
                 .foregroundStyle(Theme.secondaryText)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - 三个系统开关
+    //
+    // 这三项管的是「系统长什么样」，跟手势库无关，所以只在这里给快捷入口，
+    // 不占主窗口的设置页。真相在系统里（Finder 偏好 / 事件 tap 活着没有），
+    // 每次显示浮窗前由控制器 refresh，切换后以实际结果回写。
+
+    private var systemRows: some View {
+        VStack(spacing: 0) {
+            toggleRow(symbol: "display",
+                      title: "隐藏桌面图标",
+                      isOn: Binding(get: { toggles.hideDesktopIcons },
+                                    set: { toggles.setDesktopIconsHidden($0) }))
+
+            toggleRow(symbol: toggles.showHiddenFiles ? "eye" : "eye.slash",
+                      title: "显示隐藏文件",
+                      isOn: Binding(get: { toggles.showHiddenFiles },
+                                    set: { toggles.setHiddenFilesShown($0) }))
+
+            toggleRow(symbol: "keyboard",
+                      title: "锁定键盘",
+                      subtitle: toggles.keyboardAuthNeeded
+                          ? "需要授权：系统设置 → 隐私与安全性 → 辅助功能"
+                          : "清洁键盘时用 · 鼠标触控板不受影响",
+                      subtitleIsWarning: toggles.keyboardAuthNeeded,
+                      isOn: Binding(get: { toggles.keyboardLocked },
+                                    set: { toggles.setKeyboardLocked($0) }))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
+    private func toggleRow(symbol: String,
+                           title: String,
+                           subtitle: String? = nil,
+                           subtitleIsWarning: Bool = false,
+                           isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 12))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(subtitleIsWarning ? Color.orange : Theme.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
     }
 
     // MARK: - 底部

@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // 键盘锁的双保险：tap 随进程消失本来就会拆，但主动放一次更符合直觉，
+        // 也避免"退出动画期间键盘还哑着"的错觉。
+        SystemKeyboardLock.unlock()
         model?.shutdown()
     }
 

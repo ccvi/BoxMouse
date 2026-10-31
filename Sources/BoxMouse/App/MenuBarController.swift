@@ -39,6 +39,7 @@ private final class MenuPanel: NSPanel {
 /// 浮窗外壳：给内容加圆角和一道细边，其余交给 MenuBarPanel
 private struct MenuPanelRoot: View {
     let model: AppModel
+    let toggles: SystemTogglesModel
     let onClose: () -> Void
 
     private var shape: RoundedRectangle {
@@ -46,7 +47,7 @@ private struct MenuPanelRoot: View {
     }
 
     var body: some View {
-        MenuBarPanel(model: model, onClose: onClose)
+        MenuBarPanel(model: model, toggles: toggles, onClose: onClose)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5))
     }
@@ -62,6 +63,8 @@ final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let hosting: NSHostingController<MenuPanelRoot>
     private let panel: MenuPanel
+    /// 三个系统开关的现场状态：浮窗常驻不重建，所以不能靠 onAppear 刷新
+    private let toggles = SystemTogglesModel()
 
     /// 全局鼠标监听：面板可见时才挂，收起就摘
     private var globalClickMonitor: Any?
@@ -72,14 +75,18 @@ final class MenuBarController: NSObject {
     init(model: AppModel) {
         self.model = model
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        self.hosting = NSHostingController(rootView: MenuPanelRoot(model: model, onClose: {}))
+        self.hosting = NSHostingController(rootView: MenuPanelRoot(model: model,
+                                                                   toggles: SystemTogglesModel(),
+                                                                   onClose: {}))
         self.panel = MenuPanel(contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 320),
                                styleMask: [.borderless, .nonactivatingPanel],
                                backing: .buffered,
                                defer: false)
         super.init()
         // onClose 要回指 self，只能等 super.init 之后再把真正的 rootView 换进去
-        hosting.rootView = MenuPanelRoot(model: model, onClose: { [weak self] in self?.closePanel() })
+        hosting.rootView = MenuPanelRoot(model: model,
+                                         toggles: toggles,
+                                         onClose: { [weak self] in self?.closePanel() })
         configurePanel()
         configureStatusItem()
         observeEngineState()
@@ -141,6 +148,9 @@ final class MenuBarController: NSObject {
     private func showPanel() {
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
 
+        // 三个系统开关的真相在系统里（Finder 偏好、tap 还活着没），
+        // 每次显示前现场重读一遍——用户可能在别处改过。
+        toggles.refresh()
         resizePanel()
         positionPanel(anchor: buttonWindow)
 

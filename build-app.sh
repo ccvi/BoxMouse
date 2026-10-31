@@ -314,9 +314,16 @@ if [[ "$DO_INSTALL" == "1" ]]; then
     echo ""
     echo "▶ 安装到 /Applications…"
     rm -rf "/Applications/$APP_NAME.app"
-    cp -R "$APP_DIR" "/Applications/"
+    # 🔴 用 ditto 复制，**不要重新签名**。
+    # 这里曾经写成「cp -R + codesign --force --sign -」——那句 ad-hoc 重签
+    # 会把 --identity 指定的固定证书覆盖成临时签名，cdhash 变了，
+    # 「辅助功能」授权立刻失效：装完看着一切正常，手势一条都不触发。
+    # 复制本身不改签名要求，xattr 也不在签名封存范围内。
+    ditto "$APP_DIR" "/Applications/$APP_NAME.app"
     xattr -cr "/Applications/$APP_NAME.app" 2>/dev/null || true
-    codesign --force --sign - --timestamp=none "/Applications/$APP_NAME.app" > /dev/null 2>&1 || true
+    if ! codesign --verify --strict "/Applications/$APP_NAME.app" 2>/dev/null; then
+        echo "  ⚠️ 安装副本的签名校验没过，TCC 授权可能会掉，请检查 $SIGN_IDENTITY"
+    fi
     echo "  ✓ 已安装：/Applications/$APP_NAME.app"
 fi
 
