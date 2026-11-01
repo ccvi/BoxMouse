@@ -67,6 +67,17 @@ for ((i = 1; i <= $#; i++)); do
     esac
 done
 
+# 没显式给 --identity 时，自动挑本机的固定自签名身份；
+# 真找不到才退回 ad-hoc（并在签名那一步把后果说出来）。
+FIXED_IDENTITY_NAME="FastFind Local Signing"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    AUTO_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep "$FIXED_IDENTITY_NAME" | head -1 | awk '{print $2}')"
+    if [[ -n "$AUTO_IDENTITY" ]]; then
+        SIGN_IDENTITY="$AUTO_IDENTITY"
+    fi
+fi
+
 APP_NAME="BoxMouse"
 DISPLAY_NAME="BoxMouse"
 DIST_DIR="$PROJECT_ROOT/dist"
@@ -319,12 +330,21 @@ if [[ "$DO_INSTALL" == "1" ]]; then
     # 会把 --identity 指定的固定证书覆盖成临时签名，cdhash 变了，
     # 「辅助功能」授权立刻失效：装完看着一切正常，手势一条都不触发。
     # 复制本身不改签名要求，xattr 也不在签名封存范围内。
+    DIST_CDHASH="$(codesign -dvvv "$APP_DIR" 2>&1 | awk -F= '/^CDHash=/ {print $2; exit}')"
     ditto "$APP_DIR" "/Applications/$APP_NAME.app"
     xattr -cr "/Applications/$APP_NAME.app" 2>/dev/null || true
     if ! codesign --verify --strict "/Applications/$APP_NAME.app" 2>/dev/null; then
-        echo "  ⚠️ 安装副本的签名校验没过，TCC 授权可能会掉，请检查 $SIGN_IDENTITY"
+        echo "  ✗ 安装副本签名校验失败，TCC 授权一定会掉" >&2
+        exit 1
     fi
-    echo "  ✓ 已安装：/Applications/$APP_NAME.app"
+    # 装完比对 cdhash：不一致就是「被谁重签过」的硬证据。
+    INSTALLED_CDHASH="$(codesign -dvvv "/Applications/$APP_NAME.app" 2>&1 | awk -F= '/^CDHash=/ {print $2; exit}')"
+    if [[ -z "$DIST_CDHASH" || "$DIST_CDHASH" != "$INSTALLED_CDHASH" ]]; then
+        echo "  ✗ cdhash 不一致：dist=${DIST_CDHASH:-?} / 安装=${INSTALLED_CDHASH:-?}" >&2
+        echo "    安装过程改动了签名封存，此前的辅助功能 / 输入监控授权会失效。" >&2
+        exit 1
+    fi
+    echo "  ✓ 已安装：/Applications/$APP_NAME.app（cdhash ${INSTALLED_CDHASH}）"
 fi
 
 cat <<'TIPS'
