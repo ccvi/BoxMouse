@@ -96,11 +96,28 @@ private final class TrackpadRecognizer {
     /// 画轨迹的最小总长：触控板约 10~11cm，0.30 ≈ 3cm，
     /// 再短的"画"多半是想移动指针或者误触
     private let pathMinTravel: Double = 0.30
+    /// 起手宽限：手指是**分先后落板**的，两指差 1~2 帧（8~32ms）在真机上是常态，
+    /// 第一帧常常只报 1 根手指。早先这里一遇到手指数变化就把整轮判死，
+    /// 结果就是「两指滑动永远不触发」——只要落地差一帧就永远走不到方向判定；
+    /// 单指画轨迹也会被中途多报的一个触点毁掉（拇指蹭到板边、手掌贴到边缘）。
+    /// 宽限期内改为按稳定后的指头数**重开一轮**（重置起点/时间/轨迹），不作废。
+    private let startGrace: TimeInterval = 0.15
+    /// 修饰键宽限：要求「手指落下之前就按住」在物理上做不到那一帧的精度，
+    /// 起手后 0.2 秒内补按的也算数（仍然只认一次，中途换键不改语义）。
+    private let modifierGrace: TimeInterval = 0.20
 
     private var active = false
     private var fingers = 0
     private var fingerCountChanged = false
     private var fired = false
+    /// 这一轮已经重开过几次（见 startGrace）。
+    ///
+    /// 必须设上限：手指数在 2↔3 之间来回抖（手掌蹭到板边就是这样）时，
+    /// 每帧都"在宽限内"、每帧都重开，`startTime` 永远被刷新 → 这一轮既判不死
+    /// 也走不到判定，最后超时收尾还会按"轻点"处理，凭空多出一个「两指轻点」。
+    /// 真机上"分先后落板"最多差 1~2 帧，给两次足够了。
+    private var restarts = 0
+    private let maxRestarts = 2
     private var modifiers: Set<ModifierKey> = []
     private var startTime: TimeInterval = 0
     private var lastTime: TimeInterval = 0
@@ -113,6 +130,25 @@ private final class TrackpadRecognizer {
     /// 单指轨迹采集（画轨迹手势）。y 取负存：触控板 y 向远端为正，
     /// 屏幕坐标 y 向下为正，翻过来才跟鼠标手势的模板同一个方向。
     private var pathPoints: [CGPoint] = []
+
+    /// 这一轮最后是怎么结束的（命中 / 作废原因）。
+    /// 以前作废是完全静默的：「手势没反应」只能靠猜。现在无论成败都留一句话，
+    /// 由引擎写进 trackpad-trace.log——下次排查不用再通读识别器。
+    private(set) var lastOutcome = ""
+    /// 这一轮有没有出现过 2 根以上手指。单指点一下也会开一轮，
+    /// 全写进日志会淹没真正有用的线索，所以只记"多指参与的轮次"。
+    private(set) var sawMultiFinger = false
+
+    /// 读走这一轮的结论（读后清零，避免同一轮被重复记录）。
+    ///
+    /// 单指点一下也会开一轮，那些「轻点(1)」写进日志只会把有用线索淹掉，
+    /// 所以这里只放行两类：出现过多指的轮次，和真的画了轨迹的轮次。
+    func takeOutcome() -> String? {
+        defer { lastOutcome = ""; sawMultiFinger = false }
+        guard !lastOutcome.isEmpty else { return nil }
+        guard sawMultiFinger || lastOutcome.hasPrefix("画轨迹") else { return nil }
+        return lastOutcome
+    }
 
     /// 起手瞬间回调一次（手指落下的那一刻）。
     ///
@@ -141,6 +177,7 @@ private final class TrackpadRecognizer {
             fingerCountChanged = false
             fired = false
             modifiers = incomingModifiers
+            if incoming >= 2 { sawMultiFinger = true }
             onStart?(incomingModifiers)
             startTime = timestamp
             lastTime = timestamp
@@ -156,10 +193,34 @@ private final class TrackpadRecognizer {
             return nil
         }
 
-        // 过程中手指数变了（先放两指又补一指）→ 这一轮作废
+        let elapsed = timestamp - startTime
+
+        // 过程中手指数变了（先落一指再补一指 / 中途多报一个触点）
         if incoming != fingers {
+            // 先记下「这一轮出现过多指」：下面那条作废原因是最需要进日志的一类，
+            // 单指起手、后来补一指的轮次如果不记，takeOutcome 会把它过滤掉。
+            if incoming >= 2 { sawMultiFinger = true }
+            if elapsed <= startGrace, !fired, restarts < maxRestarts {
+                // 宽限期内：以稳定后的指头数重开这一轮。等价于"手指本来就是一起落下的"，
+                // 只是晚了 1~2 帧——起点和时间都从这一帧重新算，所以方向判定仍然准。
+                restartRound(fingers: incoming,
+                             touches: touches,
+                             timestamp: timestamp,
+                             incomingModifiers: incomingModifiers)
+                return nil
+            }
+            // 宽限期之外才作废：那时已经画了一段，起点和方向都不再可信
             fingerCountChanged = true
+            lastOutcome = "作废：手指数 \(fingers)→\(incoming)（\(Int(elapsed * 1000))ms"
+                + (restarts >= maxRestarts ? "，重开次数已用完）" : "，超出起手宽限）")
             return nil
+        }
+
+        if incoming >= 2 { sawMultiFinger = true }
+
+        // 修饰键宽限：落指后再补按也算数（人做不到精确到"落下之前"那一帧）
+        if modifiers.isEmpty, !incomingModifiers.isEmpty, elapsed <= modifierGrace {
+            modifiers = incomingModifiers
         }
 
         lastTime = timestamp
@@ -189,14 +250,43 @@ private final class TrackpadRecognizer {
         return nil
     }
 
+    /// 起手宽限期内的重开：手指数稳定了，但这一轮其实还没真正开始计时。
+    /// 起点、时间、轨迹全部重置到当前这一帧——方向判定和画轨迹都从稳定后算起。
+    private func restartRound(fingers incoming: Int,
+                              touches: [CGPoint],
+                              timestamp: TimeInterval,
+                              incomingModifiers: Set<ModifierKey>) {
+        restarts += 1
+        fingers = incoming
+        startTime = timestamp
+        lastTime = timestamp
+        startCentroid = centroid(of: touches)
+        startSpread = spread(of: touches)
+        hasCoords = touches.count >= 2
+        lastCentroid = startCentroid
+        lastSpread = startSpread
+        pathPoints = []
+        if incoming == 1, let first = touches.first {
+            pathPoints.append(CGPoint(x: Double(first.x), y: Double(-first.y)))
+        }
+        if incoming >= 2 { sawMultiFinger = true }
+        if modifiers.isEmpty, !incomingModifiers.isEmpty { modifiers = incomingModifiers }
+    }
+
     /// 抬手 / 超时时收尾：单指还能判「画轨迹」，之后只剩「轻点」。
     func finish() -> TrackpadReport? {
-        guard active, !fingerCountChanged, !fired else { return nil }
+        guard active, !fired else { return nil }
+        if fingerCountChanged {
+            if lastOutcome.isEmpty { lastOutcome = "作废：手指数变过" }
+            return nil
+        }
         fired = true
 
         // 单指画轨迹：点数和总长都够才当手势——轻点、小幅蹭动不该触发
         if fingers == 1, pathPoints.count >= 6,
            PathRecognizer.length(pathPoints) >= pathMinTravel {
+            lastOutcome = "画轨迹 \(pathPoints.count) 点 / 长度 "
+                + String(format: "%.2f", PathRecognizer.length(pathPoints))
             return TrackpadReport(event: .path(pathPoints), fingers: 1, modifiers: modifiers)
         }
 
@@ -204,12 +294,25 @@ private final class TrackpadRecognizer {
         // 时间戳单位如果不是秒（个别系统版本给的是毫秒），duration 会离谱地大。
         // 这种情况不判轻点，至少不会把一次轻点误当滑动。
         let saneDuration = duration > 0 && duration < 5
-        guard saneDuration, duration <= tapMaxDuration else { return nil }
+        guard saneDuration, duration <= tapMaxDuration else {
+            if fingers >= 2 || sawMultiFinger {
+                lastOutcome = "作废：时长 " + String(format: "%.2f", duration)
+                    + "s 超出轻点窗口（\(fingers) 指）"
+            }
+            return nil
+        }
 
         let dx = Double(lastCentroid.x - startCentroid.x)
         let dy = Double(lastCentroid.y - startCentroid.y)
-        if hasCoords, hypot(dx, dy) > tapMaxTravel { return nil }
+        if hasCoords, hypot(dx, dy) > tapMaxTravel {
+            if fingers >= 2 || sawMultiFinger {
+                lastOutcome = "作废：位移 " + String(format: "%.2f", hypot(dx, dy))
+                    + " 超过轻点上限、又没到滑动阈值 0.12（\(fingers) 指）"
+            }
+            return nil
+        }
 
+        lastOutcome = "轻点(\(fingers))"
         return TrackpadReport(event: .tap(fingers: fingers), fingers: fingers, modifiers: modifiers)
     }
 
@@ -226,6 +329,7 @@ private final class TrackpadRecognizer {
         if fingers == 2, lastSpread > 0, startSpread > 0.02 {
             let ratio = lastSpread / startSpread
             if ratio >= 1 + pinchMinRatio || ratio <= 1 / (1 + pinchMinRatio) {
+                lastOutcome = "捏合 " + String(format: "%.2f", ratio)
                 return .pinch(spreadRatio: ratio)
             }
         }
@@ -238,6 +342,8 @@ private final class TrackpadRecognizer {
             // 触控板坐标 y 轴朝远端为正：手指向屏幕上方滑 → dy > 0
             direction = dy > 0 ? .up : .down
         }
+        lastOutcome = "滑动(\(fingers))\(direction.shortName) 位移 "
+            + String(format: "%.2f", travel)
         return .swipe(fingers: fingers, direction: direction)
     }
 
@@ -246,6 +352,7 @@ private final class TrackpadRecognizer {
         fingers = 0
         fingerCountChanged = false
         fired = false
+        restarts = 0
         hasCoords = false
         startSpread = 0
         lastSpread = 0
@@ -695,6 +802,17 @@ final class TrackpadEngine {
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// 一轮手势的结论，两条路都写。
+    ///
+    /// 🔴 `appendDiag` 只在**诊断面板打开时**才落盘——上次排查触摸板，
+    /// `trackpad.log` 里只剩一行「诊断开始」，用户到底划了什么、为什么没生效，
+    /// 文件里一个字都没有，只能靠猜。所以这里同时写 `trace()`（一直写、60 行环）。
+    /// 一轮只调一次，写文件的开销可以忽略。
+    private func logRoundOutcome(_ outcome: String) {
+        appendDiag("轮次 → \(outcome)")
+        Self.trace("轮次 → \(outcome)")
+    }
+
     private static let stampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
@@ -905,8 +1023,13 @@ final class TrackpadEngine {
         lock.lock()
         let stale = recognizer.isActive && Date().timeIntervalSince(lastFrameAt) > 0.12
         let report = stale ? recognizer.finish() : nil
+        // 超时收尾这一条路上也可能带出结论（比如「作废：时长 0.83s」），
+        // 抬手帧不一定来，所以这里是最后一处能记下作废原因的地方。必须在 reset 之前读。
+        let outcome = stale ? recognizer.takeOutcome() : nil
         if stale { recognizer.reset() }
         lock.unlock()
+
+        if let outcome { logRoundOutcome(outcome) }
 
         // 这一轮结束了：收掉浮层，同时把定时器摘掉（等下次有帧再挂）
         if stale {
@@ -999,10 +1122,14 @@ final class TrackpadEngine {
         let frameNote = frameCount % 60 == 1
             ? "frame #\(frameCount) 手指 \(Int(count)) 触点 \(touches.count) 步长 \(usedStride)"
             : nil
+        // 结论在锁内读走（lastOutcome 由 update 在锁内写），出来再写日志。
+        // 命中与作废都记：以前作废是静默的，「手势没反应」只能靠猜。
+        let outcome = recognizer.takeOutcome()
         lock.unlock()
 
         if let frameNote { appendDiag(frameNote) }
         if let rawDump { appendDiag("首帧原始数据：\(rawDump)") }
+        if let outcome { logRoundOutcome(outcome) }
 
         // 画轨迹的视觉反馈：只跟单指。起手时把修饰键带出去，
         // 由调用方决定这一轮要不要画（没配画轨迹手势就不画，免得指针移动时一直拖线）。

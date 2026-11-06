@@ -1787,7 +1787,68 @@ enum SelfTest {
             check(false, "三指上滑能被认出来")
         }
 
-        // 两指捏合：间距从 0.4 缩到 0.1
+        // 两指**分先后落板**：第一帧只报 1 根手指，第二帧才 2 根。
+        // 真机上这是常态（差 1~2 帧），早先「手指数一变就整轮作废」
+        // 让两指滑动永远走不到方向判定——这就是「滑动全都无效」的根因。
+        // 起手宽限内必须**重开一轮**并正常识别。
+        let staggered: [(fingers: Int, points: [CGPoint])] = [
+            (fingers: 1, points: [point(0.80, 0.50)]),
+            (fingers: 2, points: [point(0.70, 0.50), point(0.90, 0.50)]),
+            (fingers: 2, points: [point(0.65, 0.50), point(0.85, 0.50)]),
+            (fingers: 2, points: [point(0.55, 0.50), point(0.75, 0.50)])
+        ]
+        if let report = TrackpadSelfTest.recognize(staggered) {
+            check(report.event == .swipe(fingers: 2, direction: .left),
+                  "两指分先后落板仍能认出左滑（实际 \(report.event)）")
+        } else {
+            check(false, "两指分先后落板仍能认出左滑（实际没认出来）")
+        }
+
+        // 但宽限**只**罩住起手那一下。手指按着不动超过 0.15s 之后再补一根，
+        // 那是真的换了意图，不能还当同一轮继续判——否则「按住一指再补一指」
+        // 会被当成拖拽滑动，误触更糟。
+        let lateSecondFinger: [(fingers: Int, points: [CGPoint])] = [
+            (fingers: 1, points: [point(0.50, 0.50)]),
+            (fingers: 1, points: [point(0.50, 0.50)]),
+            (fingers: 1, points: [point(0.50, 0.50)]),
+            (fingers: 1, points: [point(0.50, 0.50)]),
+            (fingers: 1, points: [point(0.50, 0.50)]),
+            (fingers: 2, points: [point(0.40, 0.50), point(0.60, 0.50)])
+        ]
+        check(TrackpadSelfTest.recognize(lateSecondFinger) == nil,
+              "超出起手宽限才补的手指会让整轮作废（不该识别出任何手势）")
+
+        // 手指数在 2↔3 之间来回抖（手掌蹭板边就是这样）：每帧都"在宽限内"、
+        // 每帧都重开，startTime 被无限刷新 → 既判不死也走不到判定，
+        // 超时收尾还会按「轻点」处理，凭空多出一个「两指轻点」。重开必须封顶。
+        let jitter: [(fingers: Int, points: [CGPoint])] = [
+            (fingers: 2, points: [point(0.40, 0.50), point(0.60, 0.50)]),
+            (fingers: 3, points: [point(0.40, 0.50), point(0.60, 0.50), point(0.50, 0.62)]),
+            (fingers: 2, points: [point(0.40, 0.50), point(0.60, 0.50)]),
+            (fingers: 3, points: [point(0.40, 0.50), point(0.60, 0.50), point(0.50, 0.62)]),
+            (fingers: 2, points: [point(0.40, 0.50), point(0.60, 0.50)]),
+            (fingers: 3, points: [point(0.40, 0.50), point(0.60, 0.50), point(0.50, 0.62)])
+        ]
+        check(TrackpadSelfTest.recognize(jitter) == nil,
+              "手指数来回抖动不会变成凭空一次轻点（实际 \(String(describing: TrackpadSelfTest.recognize(jitter)?.event))）")
+
+
+        // 早先同样整轮作废，用户看到的是「划线基本识别不了」。
+        var pathWithNoise: [(fingers: Int, points: [CGPoint])] = []
+        for step in 0..<12 {
+            pathWithNoise.append((fingers: 1,
+                                  points: [point(0.15 + Double(step) * 0.06, 0.50)]))
+        }
+        // 第 3 帧（起手宽限内）多报一个触点，下一帧又消失
+        pathWithNoise.insert((fingers: 2,
+                              points: [point(0.27, 0.50), point(0.31, 0.62)]), at: 2)
+        let noisyPath = TrackpadSelfTest.recognize(pathWithNoise)
+        check({
+            if case .path = noisyPath?.event { return true }
+            return false
+        }(), "起手后中途多报一个触点，画轨迹仍能识别（实际 \(String(describing: noisyPath?.event))）")
+
+
         var pinch: [(fingers: Int, points: [CGPoint])] = []
         for step in 0..<6 {
             let half = 0.20 - Double(step) * 0.03
@@ -1889,10 +1950,21 @@ enum SelfTest {
         check(drifted?.modifiers == [.fn],
               "起手之后松开修饰键，这一轮仍按起手时的算（实际 \(String(describing: drifted?.modifiers))）")
 
-        // ② 起手时什么都没按，后面才按 Fn → 整轮不算 Fn
-        let late = TrackpadSelfTest.recognize(tap, modifiersPerFrame: [[], [], [.fn], [.fn]])
-        check(late?.modifiers == [],
-              "起手之后才按下的修饰键不参与匹配（实际 \(String(describing: late?.modifiers))）")
+        // ② 起手时什么都没按，**0.2 秒内**补按 Fn → 采纳。
+        //    人做不到把修饰键按在手指落下之前那一帧上，早先的「只在起手帧判一次」
+        //    等于要求用户先按住修饰键再落指、且不能差一帧，实际用起来就是"配了没用"。
+        let early: [(fingers: Int, points: [CGPoint])] = Array(
+            repeating: (fingers: 1, points: [CGPoint(x: 0.5, y: 0.5)]), count: 6)
+        let late = TrackpadSelfTest.recognize(
+            early, modifiersPerFrame: [[], [], [.fn], [.fn], [.fn], [.fn]])
+        check(late?.modifiers == [.fn],
+              "起手 0.2 秒内补按的修饰键会采纳（实际 \(String(describing: late?.modifiers))）")
+
+        // ③ 但起手 0.2 秒**之后**才按的仍然不采纳：那一轮早就在按别的意图判了
+        let tooLate = TrackpadSelfTest.recognize(
+            early, modifiersPerFrame: [[], [], [], [], [], [.fn]])
+        check(tooLate?.modifiers == [],
+              "起手 0.2 秒之后才按的修饰键不参与匹配（实际 \(String(describing: tooLate?.modifiers))）")
 
         // ③ 候选筛选：全等匹配
         // 用临时目录建一个干净的库，塞两条形态完全相同、只有修饰键不同的手势。
