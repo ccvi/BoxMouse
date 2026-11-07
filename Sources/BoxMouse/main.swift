@@ -12,10 +12,17 @@ if CommandLine.arguments.contains("--selftest") {
 }
 
 // 诊断开关：对当前前台窗口执行一次窗口操作，打印前后实际坐标
-//   .build/debug/BoxMouse --windowop leftHalf
+//   .build/debug/BoxMouse --windowop leftHalf [--resize 900,700] [--repeat 2]
 if let index = CommandLine.arguments.firstIndex(of: "--windowop"),
    CommandLine.arguments.count > index + 1 {
     MainActor.assumeIsolated { WindowOpProbe.run(CommandLine.arguments[index + 1]) }
+    exit(0)
+}
+
+// 诊断开关：把「设 frame」拆成几种调用序列，逐条看哪种一次就生效
+//   .build/debug/BoxMouse --windowseq
+if CommandLine.arguments.contains("--windowseq") {
+    MainActor.assumeIsolated { WindowOpProbe.runSequence() }
     exit(0)
 }
 

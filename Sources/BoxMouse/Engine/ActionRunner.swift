@@ -547,32 +547,158 @@ final class ActionRunner {
         let isFullScreen = (attribute(window, "AXFullScreen" as CFString) as? NSNumber)?.boolValue ?? false
         if isFullScreen {
             AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                _ = Self.setWindowFrame(window, to: target)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                self?.placeWindow(window, to: target)
             }
             return true
         }
-        return Self.setWindowFrame(window, to: target)
+        return placeWindow(window, to: target)
     }
 
-    /// 设置窗口的 position + size。
+    /// 分拍摆窗口：先位置 → 等它**真的画到**目标位置 → 再尺寸 → 补位置。
     ///
-    /// 顺序是「位置 → 尺寸 → 再位置」：有的应用会按当前尺寸约束位置（贴边吸附），
-    /// 只设一次位置的话最后会被它自己改回去。这是窗口管理器的通行做法。
-    private static func setWindowFrame(_ window: AXUIElement, to rect: CGRect) -> Bool {
-        var origin = rect.origin
-        var size = rect.size
-        guard let positionValue = AXValueCreate(.cgPoint, &origin),
-              let sizeValue = AXValueCreate(.cgSize, &size) else { return false }
+    /// 🔴 这就是「窗口操作要执行两次才准」的根因与修法。
+    ///
+    /// Chromium / Electron（Edge、WorkBuddy）把 AX 的位置变更做成了约 200ms 的
+    /// **平滑过渡**。而且 AX 的 position 属性在写入后**立刻**就报目标值（乐观更新），
+    /// 读属性根本看不出过渡还在走 —— 在过渡途中写尺寸，窗口会被定格甚至弹回起点。
+    /// 实测（`BoxMouse --windowseq`，目标 x=570 w=1140，起点左半屏 x=0 w=855）：
+    ///
+    /// | 调用序列 | 结果 |
+    /// |---|---|
+    /// | position → size（旧实现） | x=0 w=1140，位置整个丢了 |
+    /// | position → 120ms → size | x=499，停在过渡中间 |
+    /// | position → 280ms → size | x=570 w=1140 ✅ |
+    ///
+    /// 真实渲染位置的过渡轨迹（CGWindowList 采样，40ms 一拍）：
+    /// x = 236 → 468 → 541 → 568 → 570，约 200ms 到位；而 AX 读回一直报 570。
+    ///
+    /// 所以判「到位」只能读**合成器的真实位置**（CGWindowList）。原生 AppKit 应用
+    /// 是瞬时就位的，轮询第一拍就能过，不会有额外延迟；只有真有过渡的应用才等。
+    ///
+    /// 用户看到的现象正好对得上：左 1/2 → 右 2/3 时，第一次只有位置动了、尺寸被
+    /// 过渡吞掉，第二次因为位置已经是同值（没有过渡）尺寸才生效。
+    @discardableResult
+    private func placeWindow(_ window: AXUIElement, to target: CGRect) -> Bool {
+        guard let before = windowFrame(window) else { return false }
 
-        let positionResult = AXUIElementSetAttributeValue(window,
-                                                          kAXPositionAttribute as CFString,
-                                                          positionValue)
-        let sizeResult = AXUIElementSetAttributeValue(window,
-                                                      kAXSizeAttribute as CFString,
-                                                      sizeValue)
-        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
-        return positionResult == .success && sizeResult == .success
+        // 位置本来就在目标上：不会有过渡，直接写尺寸（重复按同一个操作走这条路）
+        if Self.isSame(before.origin, target.origin) {
+            return Self.setSize(window, target.size)
+        }
+        guard Self.setPosition(window, target.origin) else { return false }
+
+        // 记下这个窗口在合成器里的编号，后面只盯它自己的真实位置。
+        // AX 没有窗口编号属性，只能按「位置 + 尺寸与 AX 读数最接近」认。
+        let number = Self.windowNumber(of: window, near: before)
+        waitForRenderedPosition(window, number: number, target: target, attempt: 0)
+        return true
+    }
+
+    /// 轮询合成器位置，等窗口真的画到位再写尺寸。20ms 一拍，最多 20 拍（400ms）。
+    ///
+    /// 等太久也不能不响应：超过上限照样写尺寸，宁可位置差一点，
+    /// 也好过用户按了手势什么都没发生。
+    private func waitForRenderedPosition(_ window: AXUIElement,
+                                         number: CGWindowID?,
+                                         target: CGRect,
+                                         attempt: Int) {
+        let arrived: Bool
+        if let number, let rendered = Self.renderedOrigin(of: number) {
+            // 3pt 容差：过渡尾段会有一两像素的余量，卡太死会白等好几拍
+            arrived = Self.isSame(rendered, target.origin, tolerance: 3)
+        } else {
+            // 认不出合成器里的窗口（多窗口应用、窗口被别的窗口完全盖住等）：
+            // 保守地按 Chromium 的过渡时长等满 260ms，再退回原来的行为
+            arrived = attempt >= 13
+        }
+        guard !arrived, attempt < 20 else {
+            finishTiling(window, target: target)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+            self?.waitForRenderedPosition(window, number: number,
+                                          target: target, attempt: attempt + 1)
+        }
+    }
+
+    /// 位置到位了，写尺寸，最后补一次位置。
+    private func finishTiling(_ window: AXUIElement, target: CGRect) {
+        guard Self.setSize(window, target.size) else { return }
+        // 改尺寸会按 NS 的左下角锚点带偏位置（改高度时尤其明显：「左上 1/4」
+        // 把高度砍半，底边不动、顶边就跑了）。100ms 后补一次 —— 那时位置过渡
+        // 早已结束，补位置不会反过来把尺寸打回。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, let now = self.windowFrame(window),
+                  !Self.isSame(now.origin, target.origin) else { return }
+            _ = Self.setPosition(window, target.origin)
+        }
+    }
+
+    /// 两个坐标是否在容差内相等。
+    /// 各应用的取整习惯不同（实测 1016 会报成 1015、1140 会报成 1137），
+    /// 不留容差会让轮询永远等不到「到位」。
+    private static func isSame(_ a: CGPoint, _ b: CGPoint, tolerance: CGFloat = 1) -> Bool {
+        abs(a.x - b.x) <= tolerance && abs(a.y - b.y) <= tolerance
+    }
+
+    /// 这个 AX 窗口在合成器里对应哪个窗口号。
+    /// 按「位置 + 尺寸与 AX 读数最接近」认 —— 多窗口应用里也只能这么认。
+    private static func windowNumber(of window: AXUIElement, near frame: CGRect) -> CGWindowID? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(window, &pid) == .success,
+              let list = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+
+        var best: (number: CGWindowID, distance: CGFloat)?
+        for info in list {
+            guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, owner == pid,
+                  let number = info[kCGWindowNumber as String] as? CGWindowID,
+                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = bounds["X"], let y = bounds["Y"],
+                  let w = bounds["Width"], let h = bounds["Height"],
+                  w > 100, h > 100 else { continue }
+            let distance = abs(x - frame.minX) + abs(y - frame.minY)
+                + abs(w - frame.width) + abs(h - frame.height)
+            if best == nil || distance < best!.distance {
+                best = (number, distance)
+            }
+        }
+        return best?.number
+    }
+
+    /// 这个窗口号现在**真的画在**哪（合成器坐标，与 AX 一样是从主屏顶部往下）。
+    /// 只查这一个窗口，比拉全量列表便宜得多。
+    private static func renderedOrigin(of number: CGWindowID) -> CGPoint? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], number)
+                as? [[String: Any]] else { return nil }
+        for info in list {
+            guard let infoNumber = info[kCGWindowNumber as String] as? CGWindowID,
+                  infoNumber == number,
+                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = bounds["X"], let y = bounds["Y"] else { continue }
+            return CGPoint(x: x, y: y)
+        }
+        return nil
+    }
+
+    @discardableResult
+    private static func setPosition(_ window: AXUIElement, _ origin: CGPoint) -> Bool {
+        var value = origin
+        guard let axValue = AXValueCreate(.cgPoint, &value) else { return false }
+        return AXUIElementSetAttributeValue(window,
+                                            kAXPositionAttribute as CFString,
+                                            axValue) == .success
+    }
+
+    @discardableResult
+    private static func setSize(_ window: AXUIElement, _ size: CGSize) -> Bool {
+        var value = size
+        guard let axValue = AXValueCreate(.cgSize, &value) else { return false }
+        return AXUIElementSetAttributeValue(window,
+                                            kAXSizeAttribute as CFString,
+                                            axValue) == .success
     }
 
     private func windowFrame(_ window: AXUIElement) -> CGRect? {
