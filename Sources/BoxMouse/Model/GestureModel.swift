@@ -489,6 +489,9 @@ enum WindowOp: String, Codable, CaseIterable, Identifiable {
     case rightHalf
     /// 满屏：铺满可用区（菜单栏和 Dock 之外），**不进全屏空间**
     case fillScreen
+    /// 贴左 3/5（宽度占屏 3/5，上下满高）。
+    /// 比半屏宽一点、比 2/3 窄一点，是给「主窗口 + 一个窄参考窗」准备的中间档。
+    case leftThreeFifths
     /// 贴左 2/3（宽度占屏 2/3，上下满高）
     case leftTwoThirds
     /// 贴右 2/3（与左 2/3 同宽，贴右边）
@@ -529,6 +532,7 @@ enum WindowOp: String, Codable, CaseIterable, Identifiable {
         case .leftHalf:   return "左半屏"
         case .rightHalf:  return "右半屏"
         case .fillScreen: return "窗口满屏"
+        case .leftThreeFifths:    return "左 3/5"
         case .leftTwoThirds:      return "左 2/3"
         case .rightTwoThirds:     return "右 2/3"
         case .leftThreeFourths:   return "左 3/4"
@@ -549,6 +553,7 @@ enum WindowOp: String, Codable, CaseIterable, Identifiable {
         case .leftHalf:   return "leftHalf"
         case .rightHalf:  return "rightHalf"
         case .fillScreen: return "fillScreen"
+        case .leftThreeFifths:    return "left3of5"
         case .leftTwoThirds:      return "left2of3"
         case .rightTwoThirds:     return "right2of3"
         case .leftThreeFourths:   return "left3of4"
@@ -566,6 +571,7 @@ enum WindowOp: String, Codable, CaseIterable, Identifiable {
     var isTiling: Bool {
         switch self {
         case .leftHalf, .rightHalf, .fillScreen,
+             .leftThreeFifths,
              .leftTwoThirds, .rightTwoThirds, .leftThreeFourths, .rightThreeFourths,
              .topLeftQuarter, .centerTwoThirds, .centerThreeFourths:
             return true

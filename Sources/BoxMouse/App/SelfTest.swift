@@ -745,7 +745,7 @@ enum SelfTest {
         check(WindowOp.maximize != WindowOp.restore, "最大化与还原是两个独立动作")
         check(WindowOp.maximize.displayName != WindowOp.restore.displayName,
               "两者的显示名不同（\(WindowOp.maximize.displayName) / \(WindowOp.restore.displayName)）")
-        check(WindowOp.allCases.count == 15, "窗口操作共 15 个（实际 \(WindowOp.allCases.count)）")
+        check(WindowOp.allCases.count == 16, "窗口操作共 16 个（实际 \(WindowOp.allCases.count)）")
 
         // 平铺/居中的几何。真机上只能靠肉眼看窗口摆得对不对，
         // 而"差半像素发虚""右半屏留 1pt 缝"这种事肉眼当场分不出来，只能钉死算例。
@@ -767,6 +767,19 @@ enum SelfTest {
         check(ActionRunner.tileFrame(.centerThreeFourths, in: visible, flipBase: flip)
                 == CGRect(x: 214, y: 25, width: 1282, height: 1082),
               "居中 3/4：宽度占 3/4、左右各留 214、上下满高")
+        check(ActionRunner.tileFrame(.leftThreeFifths, in: visible, flipBase: flip)
+                == CGRect(x: 0, y: 25, width: 1026, height: 1082),
+              "左 3/5：宽度占 3/5（1710×0.6=1026），贴左边、上下满高")
+        // 3/5 是插在半屏和 2/3 之间的中间档。比例写错（比如误写成 3/4）
+        // 光看单条断言不容易发现，用大小关系再钉一道。
+        if let halfWidth = ActionRunner.tileFrame(.leftHalf, in: visible, flipBase: flip)?.width,
+           let threeFifths = ActionRunner.tileFrame(.leftThreeFifths, in: visible, flipBase: flip)?.width,
+           let twoThirds = ActionRunner.tileFrame(.leftTwoThirds, in: visible, flipBase: flip)?.width {
+            check(halfWidth < threeFifths && threeFifths < twoThirds,
+                  "左 3/5 的宽度落在左半屏（\(Int(halfWidth))）与左 2/3（\(Int(twoThirds))）之间，实际 \(Int(threeFifths))")
+        } else {
+            check(false, "左 3/5 的宽度落在左半屏与左 2/3 之间")
+        }
         check(ActionRunner.tileFrame(.leftTwoThirds, in: visible, flipBase: flip)
                 == CGRect(x: 0, y: 25, width: 1140, height: 1082),
               "左 2/3：与居中 2/3 同宽同高，贴左边")

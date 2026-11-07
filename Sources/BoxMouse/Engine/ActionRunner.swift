@@ -455,6 +455,7 @@ final class ActionRunner {
                                    display: "⌃⌘F"))
             return true
         case .leftHalf, .rightHalf, .fillScreen,
+             .leftThreeFifths,
              .leftTwoThirds, .rightTwoThirds, .leftThreeFourths, .rightThreeFourths,
              .topLeftQuarter, .centerTwoThirds, .centerThreeFourths:
             // 系统没有等价的快捷键：自带的"移到左侧/右侧"要靠按住标题栏悬停，
@@ -498,12 +499,17 @@ final class ActionRunner {
             size = CGSize(width: visible.width, height: visible.height)
             offset = .zero
 
-        case .leftTwoThirds, .rightTwoThirds, .leftThreeFourths, .rightThreeFourths:
+        case .leftTwoThirds, .rightTwoThirds, .leftThreeFourths, .rightThreeFourths,
+             .leftThreeFifths:
             // 左右同宽：宽度只按比例算一次，贴右时用「可用区右边界减宽度」定位。
             // 反过来写（右半取"剩下的那部分"）会让 1710×2/3 这类含小数的宽度
             // 在左右两侧算出不同宽度，同一个 2/3 一左一右看着不一样宽。
-            let ratio: CGFloat = (op == .leftTwoThirds || op == .rightTwoThirds)
-                ? 2.0 / 3.0 : 3.0 / 4.0
+            let ratio: CGFloat
+            switch op {
+            case .leftTwoThirds, .rightTwoThirds:       ratio = 2.0 / 3.0
+            case .leftThreeFourths, .rightThreeFourths: ratio = 3.0 / 4.0
+            default:                                    ratio = 3.0 / 5.0
+            }
             let width = (visible.width * ratio).rounded(.down)
             size = CGSize(width: width, height: visible.height)
             let alignedRight = (op == .rightTwoThirds || op == .rightThreeFourths)
@@ -856,6 +862,7 @@ final class ActionRunner {
             return AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, target!) == .success
 
         case .leftHalf, .rightHalf, .fillScreen,
+             .leftThreeFifths,
              .leftTwoThirds, .rightTwoThirds, .leftThreeFourths, .rightThreeFourths,
              .topLeftQuarter, .centerTwoThirds, .centerThreeFourths:
             return tileWindow(op, to: window)
