@@ -191,6 +191,26 @@ BoxMouse/
 - 只改文档、反复构建 → 版本号不动
 - 首次打包没有指纹文件 → 沿用 VERSION 里的初版号
 
+## 发版（dmg + GitHub Releases）
+
+对外发版才做这一步，日常装机只要 `dist/BoxMouse.app`。
+
+```bash
+./build-app.sh --no-sandbox --identity "FastFind Local Signing"   # 先出包（会跑自检门禁）
+./tools/make-dmg.sh                                               # → dist/BoxMouse-<版本>.dmg
+gh release create v<版本> dist/BoxMouse-<版本>.dmg \
+    --title "BoxMouse <版本>" --notes-file notes.md --target main
+```
+
+`make-dmg.sh` 做三件事：校验签名与包内版本号一致（防止把上一版的壳当新版发出去）、
+用 `ditto` 把 app 和 `Applications` 软链组装成拖拽安装样式、打完 `hdiutil verify` 验一遍。
+
+- 🔴 **`dist/` 在 `.gitignore` 里**，dmg 不进版本库，只走 Releases 附件。
+- 本机证书是自签名（不是 Apple Developer ID），别人下载后首次打开会被 Gatekeeper 拦，
+  需要右键 → 打开，或「系统设置 → 隐私与安全性 → 仍要打开」。脚本会把这个提示打出来。
+- 🔴 **脚本里变量后面紧跟中文/全角括号时一律写 `${VAR}`**。`$OUT_PATH（` 会被 bash
+  并进变量名，`set -u` 下直接 `unbound variable` 崩掉。
+
 ## 自检
 
 ```bash
