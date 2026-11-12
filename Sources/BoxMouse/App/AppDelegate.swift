@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildWindow(model: AppModel) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1060, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 950, height: 650),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false

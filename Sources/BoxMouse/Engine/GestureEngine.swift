@@ -284,14 +284,18 @@ final class GestureEngine {
         guard store.settings.mouseControlEnabled else { return false }
         let smooth = store.settings.smoothScrollEnabled
         let invert = store.settings.invertScrollEnabled
-        guard smooth || invert else { return false }
+        let boost = Self.boostMultiplier(boostKey: store.settings.scrollBoostKey,
+                                         flags: event.flags)
+        guard smooth || invert || boost != 1.0 else { return false }
 
         let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
 
         if isContinuous || !smooth {
-            guard invert else { return false }
-            // 原地翻转后放行：保留 phase / momentumPhase，触控板的惯性不会被切断
-            Self.flipScrollFields(event)
+            guard invert || boost != 1.0 else { return false }
+            // 原地改完放行：保留 phase / momentumPhase，触控板的惯性不会被切断。
+            // 先缩再翻（乘法可交换），两件事合成一次字段遍历。
+            Self.scaleScrollFields(event, by: boost)
+            if invert { Self.flipScrollFields(event) }
             return false
         }
 
@@ -304,6 +308,8 @@ final class GestureEngine {
             dy = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * SmoothScroller.baseLineHeight
         }
         if invert { dx = -dx; dy = -dy }
+        dx *= boost
+        dy *= boost
         guard dx != 0 || dy != 0 else { return false }
 
         let strength = min(3.0, max(0.2, store.settings.smoothScrollStrength))
@@ -355,6 +361,49 @@ final class GestureEngine {
         }
         if lineX != 0 {
             event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: -lineX)
+        }
+    }
+
+    /// 按住「加速键」时位移乘多少。2 倍是手感折中：再大就变成"一按就飞"，长页面上
+    /// 容易冲过头；嫌不够可以把速度增益一起调上去。
+    static let scrollBoostFactor: Double = 2.0
+
+    /// 加速键判定（纯函数，自检直接断）。
+    ///
+    /// 用的是**这条滚轮事件自带的 flags**，不是实时查键盘状态：滚轮事件一定有
+    /// flags，读它最准；查键盘状态在 Fn 上本来就不可靠（同类问题在触摸板那边踩过）。
+    static func boostMultiplier(boostKey: ModifierKey?, flags: CGEventFlags) -> Double {
+        guard let boostKey, flags.contains(boostKey.flag) else { return 1.0 }
+        return scrollBoostFactor
+    }
+
+    /// 把位移按倍率放大（放行路径用）。
+    ///
+    /// 只动 `PointDelta` / `FixedPtDelta`，绝不动 `Delta`——写 `Delta` 会联动重算
+    /// 另外两套且不可逆，触控板上还会把位移清零（见 `flipScrollFields` 的说明）。
+    /// `Delta` 不跟着缩的代价是：只读行位移的老应用拿不到加速，但它们本来也不参与
+    /// 平滑，属于可接受的取舍。
+    static func scaleScrollFields(_ event: CGEvent, by factor: Double) {
+        guard factor != 1.0 else { return }
+        let pointY = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        let pointX = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+        if pointY != 0 {
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1,
+                                       value: Int64((Double(pointY) * factor).rounded()))
+        }
+        if pointX != 0 {
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2,
+                                       value: Int64((Double(pointX) * factor).rounded()))
+        }
+        let fixedY = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        let fixedX = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2)
+        if fixedY != 0 {
+            event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1,
+                                       value: Int64((Double(fixedY) * factor).rounded()))
+        }
+        if fixedX != 0 {
+            event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2,
+                                       value: Int64((Double(fixedX) * factor).rounded()))
         }
     }
 

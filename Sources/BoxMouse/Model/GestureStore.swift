@@ -65,6 +65,9 @@ struct BoxMouseSettings: Codable, Equatable {
     /// 速度增益：连续滚动（上一笔还没走完又来新输入）时的额外加速。
     /// 1.0 = 不加速，越大"越滚越快"越明显。
     var smoothScrollGain: Double = 1.0
+    /// 加速键：按住它滚动时距离乘 `SmoothScroller.boostFactor`（长页面用）。
+    /// nil = 不启用。触摸板 / 妙控鼠标也吃这个。
+    var scrollBoostKey: ModifierKey?
     /// 滚轮反方向：垂直和水平都翻。
     var invertScrollEnabled: Bool = false
     /// 侧键（Forward / Back）按下时要执行的动作。
@@ -85,7 +88,7 @@ struct BoxMouseSettings: Codable, Equatable {
         case multiTouchEnabled, hideDockIcon
         case showSuccessFeedback, showUnrecognizedFeedback
         case smoothScrollEnabled, smoothScrollStrength, invertScrollEnabled
-        case smoothScrollDuration, smoothScrollGain
+        case smoothScrollDuration, smoothScrollGain, scrollBoostKey
         case forwardButtonAction, backButtonAction
         case mouseControlEnabled
     }
@@ -117,6 +120,7 @@ struct BoxMouseSettings: Codable, Equatable {
             ?? fallback.smoothScrollDuration
         smoothScrollGain = try container.decodeIfPresent(Double.self, forKey: .smoothScrollGain)
             ?? fallback.smoothScrollGain
+        scrollBoostKey = try container.decodeIfPresent(ModifierKey.self, forKey: .scrollBoostKey)
         invertScrollEnabled = try container.decodeIfPresent(Bool.self, forKey: .invertScrollEnabled)
             ?? fallback.invertScrollEnabled
         forwardButtonAction = try container.decodeIfPresent(GestureAction.self, forKey: .forwardButtonAction)

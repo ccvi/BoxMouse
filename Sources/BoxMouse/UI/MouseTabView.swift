@@ -146,6 +146,8 @@ struct MouseTabView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(smoothing ? 1 : 0.5)
 
+                boostKeyRow
+
                 Divider().opacity(0.4)
 
                 HStack {
@@ -162,6 +164,72 @@ struct MouseTabView: View {
                         .labelsHidden()
                 }
             }
+        }
+    }
+
+    private var boostKey: ModifierKey? { model.store.settings.scrollBoostKey }
+
+    /// 加速键：按住时把这一笔滚动的距离放大。
+    ///
+    /// 不跟平滑滚动一起置灰——加速是**改写事件位移**，平滑关了照样能用
+    /// （那种情况走原地缩放 + 放行的路径）。
+    private var boostKeyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Text("加速键")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(width: 56, alignment: .leading)
+
+                Menu {
+                    Button("不使用") { settings.scrollBoostKey.wrappedValue = nil }
+                    Divider()
+                    ForEach(ModifierKey.allCases) { key in
+                        Button("\(key.symbol)　\(key.displayName)") {
+                            settings.scrollBoostKey.wrappedValue = key
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(boostKey?.symbol ?? "—")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(boostKey?.displayName ?? "未设置")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundStyle(boostKey == nil ? Theme.secondaryText : Color.primary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .frame(minWidth: 104, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.10))
+                    )
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+
+                Button {
+                    settings.scrollBoostKey.wrappedValue = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(boostKey == nil
+                                         ? Theme.secondaryText.opacity(0.30)
+                                         : Theme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .disabled(boostKey == nil)
+                .help("清除加速键")
+
+                Spacer(minLength: 0)
+            }
+
+            Text("按住它滚动，距离 ×\(String(format: "%.0f", GestureEngine.scrollBoostFactor))，适合长页面。触控板同样生效。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.secondaryText)
+                .padding(.leading, 66)
         }
     }
 

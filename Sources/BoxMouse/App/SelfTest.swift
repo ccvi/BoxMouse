@@ -826,6 +826,47 @@ enum SelfTest {
             check(false, "能创建纯行滚动事件")
         }
 
+        // ①b 加速键：按住时位移放大，且不能误伤别的修饰键
+        check(GestureEngine.boostMultiplier(boostKey: nil, flags: [.maskAlternate]) == 1.0,
+              "没设加速键时按什么键都不加速")
+        check(GestureEngine.boostMultiplier(boostKey: .option, flags: [.maskAlternate])
+                == GestureEngine.scrollBoostFactor,
+              "按住 Option 时位移 ×\(GestureEngine.scrollBoostFactor)")
+        check(GestureEngine.boostMultiplier(boostKey: .option, flags: [.maskCommand]) == 1.0,
+              "按住别的修饰键不加速（⌘ 不算 ⌥）")
+        check(GestureEngine.boostMultiplier(boostKey: .option,
+                                            flags: [.maskAlternate, .maskShift])
+                == GestureEngine.scrollBoostFactor,
+              "多按一个修饰键也照样加速")
+        check(GestureEngine.boostMultiplier(boostKey: .option, flags: []) == 1.0,
+              "没按修饰键不加速")
+
+        // 放行路径上的缩放：只动像素/定点位移，行位移不碰
+        if let event = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                               wheelCount: 2, wheel1: 3, wheel2: -2, wheel3: 0) {
+            let beforePoint = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+            let beforeFixed = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
+            let beforeLine = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+            check(beforePoint != 0 && beforeFixed != 0, "缩放的样本事件带像素与定点位移")
+
+            GestureEngine.scaleScrollFields(event, by: 2.0)
+            check(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == beforePoint * 2,
+                  "加速×2：像素位移翻倍（\(beforePoint) → \(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))）")
+            check(event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1) == beforeFixed * 2,
+                  "加速×2：定点位移一起翻倍")
+            check(event.getIntegerValueField(.scrollWheelEventDeltaAxis1) == beforeLine,
+                  "加速不碰行位移 Delta（写它会联动重算另外两套）")
+
+            GestureEngine.scaleScrollFields(event, by: 0.5)
+            check(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == beforePoint,
+                  "×2 再 ×0.5 回到原值（缩放可逆）")
+            GestureEngine.scaleScrollFields(event, by: 1.0)
+            check(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == beforePoint,
+                  "×1 是空操作")
+        } else {
+            check(false, "能创建滚轮事件用于加速缩放测试")
+        }
+
         // ② 该不该挂事件 tap
         var settings = BoxMouseSettings()
         settings.engineEnabled = false
@@ -884,6 +925,7 @@ enum SelfTest {
               "旧配置里两颗侧键都没有动作（继续按住画轨迹，不废掉已有侧键手势）")
         check(decoded.smoothScrollStrength == 1.0,
               "旧配置滚动距离回落成 1.0×")
+        check(decoded.scrollBoostKey == nil, "旧配置没有加速键（升级不会突然改滚动手感）")
         check(decoded.needsEventTap, "旧配置里 engineEnabled=true 照样挂 tap")
 
         // ④ 新字段能写进文件、读回来一致
@@ -892,6 +934,7 @@ enum SelfTest {
         round.smoothScrollEnabled = true
         round.smoothScrollStrength = 1.6
         round.invertScrollEnabled = true
+        round.scrollBoostKey = .option
         round.forwardButtonAction = GestureAction(kind: .browser, browserOp: .forward)
         round.backButtonAction = GestureAction(kind: .window, windowOp: .leftHalf)
         guard let data = try? JSONEncoder().encode(round),
@@ -905,6 +948,8 @@ enum SelfTest {
         check(back.backButtonAction?.windowOp == .leftHalf,
               "Back Button 的动作存下来了（\(back.backButtonAction?.windowOp?.rawValue ?? "nil")）")
         check(back.smoothScrollStrength == 1.6, "滚动距离倍率存下来了")
+        check(back.scrollBoostKey == .option,
+              "加速键存下来了（\(back.scrollBoostKey?.rawValue ?? "nil")）")
 
         // ⑤ 平滑滚轮：帧系数 + 目标累加语义
         //
