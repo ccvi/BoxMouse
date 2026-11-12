@@ -336,7 +336,8 @@ final class GestureEngine {
                       duration: store.settings.smoothScrollDuration,
                       gain: store.settings.smoothScrollGain,
                       targetPid: targetPid,
-                      targetLocation: event.location)
+                      targetLocation: event.location,
+                      template: event)
         return true
     }
 

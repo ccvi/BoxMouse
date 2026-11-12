@@ -108,6 +108,15 @@ final class SmoothScroller {
     /// 回发到会话层时不用管这个，窗口服务器会替我们路由，直投就必须自己带上。
     private(set) var targetLocation: CGPoint = .zero
 
+    /// 原始滚轮事件的副本，当作派发模板（Mos 的 `ScrollDispatchContext.eventTemplate`）。
+    ///
+    /// 🔴 不要自己新建事件：滚轮事件里除了位移，还带着**窗口相关字段**
+    /// （`mouseEventWindowUnderMousePointer` 之类）和设备上下文。新建的事件这些全是空值，
+    /// 应用拿到之后找不到该滚哪个窗口就直接丢。实测：AppKit 的 TextEdit 和 Chrome 能认，
+    /// Electron 的 WorkBuddy 一条都不动——日志说派了 25 条，屏幕纹丝不动。
+    /// 克隆原事件改位移，这些字段天然是对的。
+    private var template: CGEvent?
+
     private var duration: Double = SmoothScroller.defaultDuration
     private var gain: Double = SmoothScroller.defaultGain
     private var lastFrameTime: CFTimeInterval = 0
@@ -123,6 +132,15 @@ final class SmoothScroller {
 
     /// 自检用：置 false 时只算状态、不真派发事件（否则跑自检会把当前应用滚一下）
     var runsDriver = true
+
+    /// 派发方式。
+    ///
+    /// 🔴 默认**回发到会话层**，不走 `CGEventPostToPid` 直投，尽管直投延迟更低。
+    /// 原因：直投对 Electron 应用无效——实测 Edge(Chrome) / TextEdit 都认，
+    /// 但 WorkBuddy 一条都不动（同一格滚轮，裸事件能滚 0.34%，我们派的帧只有 0.07%
+    /// 的噪声）。克隆原事件当模板也没解决，说明差异不在窗口字段上，还有别的字段要
+    /// 逐个试。功能优先：先保住"能滚"，等把字段差异摸清楚了再切回直投。
+    static var preferDirectPosting = false
 
     /// 派发过多少条事件（诊断/自检看"到底有没有动"）
     private(set) var dispatchedEvents = 0
@@ -145,7 +163,8 @@ final class SmoothScroller {
               duration: Double = SmoothScroller.defaultDuration,
               gain: Double = SmoothScroller.defaultGain,
               targetPid: pid_t = 0,
-              targetLocation: CGPoint? = nil) {
+              targetLocation: CGPoint? = nil,
+              template: CGEvent? = nil) {
         guard pixelsX != 0 || pixelsY != 0 else { return }
 
         lock.lock()
@@ -161,6 +180,7 @@ final class SmoothScroller {
         }
         if targetPid != 0 { self.targetPid = targetPid }
         if let targetLocation { self.targetLocation = targetLocation }
+        if let template { self.template = template.copy() }
 
         // 连续滚动才吃增益：上一次还没走完，说明用户在接着滚。
         // 单格滚轮不加速，否则"轻轻滚一格"也会冲出去，和预期不符。
@@ -218,6 +238,7 @@ final class SmoothScroller {
         rampFramesLeft = 0
         targetPid = 0
         targetLocation = .zero
+        template = nil
         lock.unlock()
         stopDriver()
     }
@@ -292,6 +313,7 @@ final class SmoothScroller {
 
         let pid = targetPid
         let location = targetLocation
+        let tpl = template
         framesTicked += 1
         if settled {
             buffer = (0, 0)
@@ -309,7 +331,7 @@ final class SmoothScroller {
         // 断拍会被当成滚动结束。Mos 的实测帧流里同样有 0 像素帧，而它的节拍是满的。
         if runsDriver {
             post(wholeX: wholeX, wholeY: wholeY, dx: exactX, dy: exactY,
-                 pid: pid, location: location)
+                 pid: pid, location: location, template: tpl)
             lock.lock()
             delivered.x = current.x
             delivered.y = current.y
@@ -338,16 +360,29 @@ final class SmoothScroller {
     /// 被别的同类工具（比如同时开着的 Mos）再处理一次。直投就是"这条事件只给这个
     /// 进程"，剩下的判断交回给应用自己。
     private func post(wholeX: Int32, wholeY: Int32, dx: Double, dy: Double,
-                      pid: pid_t, location: CGPoint) {
-        guard let event = CGEvent(scrollWheelEvent2Source: nil,
-                                  units: .pixel,
-                                  wheelCount: 2,
-                                  wheel1: wholeY,
-                                  wheel2: wholeX,
-                                  wheel3: 0) else { return }
+                      pid: pid_t, location: CGPoint, template: CGEvent?) {
+        let event: CGEvent
+        if let clone = template?.copy() {
+            event = clone
+            // 先把行位移归零：写 Delta 会联动重算 Point/Fixed（带取整、不可逆），
+            // 所以顺序必须是「先归零 Delta，再写像素」。
+            // 不归零的话，只读行位移的应用会拿模板里那 3 行又滚一遍。
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: 0)
+        } else {
+            guard let fresh = CGEvent(scrollWheelEvent2Source: nil,
+                                      units: .pixel,
+                                      wheelCount: 2,
+                                      wheel1: wholeY,
+                                      wheel2: wholeX,
+                                      wheel3: 0) else { return }
+            event = fresh
+        }
         // 直投时这条是命门：位置不对，应用内命中不到窗口就整条丢弃
         // location 拿不到（理论上不该发生）就退回当前光标位置，宁可偏一点也别整条废掉
         event.location = (location == .zero ? (CGEvent(source: nil)?.location ?? .zero) : location)
+        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(wholeY))
+        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(wholeX))
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1,
                                    value: Int64((dy * 65536).rounded()))
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2,
@@ -356,9 +391,11 @@ final class SmoothScroller {
         event.setDoubleValueField(.scrollWheelEventIsContinuous, value: 1)
         // 🔴 不打这个标记，事件会再次进我们自己的 tap → 死循环（退回会话层时才会撞上）
         event.setIntegerValueField(.eventSourceUserData, value: GestureEngine.replayMark)
-        if pid > 0 {
+        if pid > 0, Self.preferDirectPosting {
             event.postToPid(pid)
         } else {
+            // 回发到会话层：窗口服务器替我们做命中测试与窗口路由，
+            // 位置/窗口字段缺了也不要紧（这也是它比直投稳的原因）
             event.post(tap: .cgSessionEventTap)
         }
         dispatchedEvents += 1
