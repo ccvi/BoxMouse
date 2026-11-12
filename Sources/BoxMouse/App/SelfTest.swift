@@ -1033,8 +1033,11 @@ enum SelfTest {
         // ⑧ 直投目标进程：目标一变先丢残量，别把剩下的几十像素打到新窗口
         let direct = SmoothScroller()
         direct.runsDriver = false
-        direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 1001)
+        direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 1001,
+                    targetLocation: CGPoint(x: 640, y: 400))
         check(direct.targetPid == 1001, "记下这一轮的目标进程（\(direct.targetPid)）")
+        check(direct.targetLocation == CGPoint(x: 640, y: 400),
+              "🔴 记下这一轮的鼠标位置（直投靠它让应用命中窗口，缺了就是「派了 45 条但屏幕不动」）")
         direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 1001)
         check(direct.buffer.y == 200,
               "同一个目标 → 同向累加到 200（\(direct.buffer.y)）")

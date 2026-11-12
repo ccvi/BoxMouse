@@ -99,6 +99,15 @@ final class SmoothScroller {
     /// 否则滚动动画会把剩下的几十像素打到用户新切过去的窗口上。
     private(set) var targetPid: pid_t = 0
 
+    /// 这一轮滚动的鼠标位置（全局坐标）。
+    ///
+    /// 🔴 直投之后，**应用是拿 `event.location` 自己判断"该滚哪个窗口"的**
+    /// （Mos 的注释原话：进程内通过 event.location 做窗口级 hit-testing）。
+    /// 新建的 CGEvent 位置是 (0,0)，进程里命中不到任何窗口 → 事件被静默丢弃，
+    /// 表现就是"开关开着、日志说派了 45 条，屏幕上一点不动"。
+    /// 回发到会话层时不用管这个，窗口服务器会替我们路由，直投就必须自己带上。
+    private(set) var targetLocation: CGPoint = .zero
+
     private var duration: Double = SmoothScroller.defaultDuration
     private var gain: Double = SmoothScroller.defaultGain
     private var lastFrameTime: CFTimeInterval = 0
@@ -135,7 +144,8 @@ final class SmoothScroller {
     func feed(pixelsX: Double, pixelsY: Double,
               duration: Double = SmoothScroller.defaultDuration,
               gain: Double = SmoothScroller.defaultGain,
-              targetPid: pid_t = 0) {
+              targetPid: pid_t = 0,
+              targetLocation: CGPoint? = nil) {
         guard pixelsX != 0 || pixelsY != 0 else { return }
 
         lock.lock()
@@ -150,6 +160,7 @@ final class SmoothScroller {
             rampFramesLeft = 0
         }
         if targetPid != 0 { self.targetPid = targetPid }
+        if let targetLocation { self.targetLocation = targetLocation }
 
         // 连续滚动才吃增益：上一次还没走完，说明用户在接着滚。
         // 单格滚轮不加速，否则"轻轻滚一格"也会冲出去，和预期不符。
@@ -206,6 +217,7 @@ final class SmoothScroller {
         lastFrameTime = 0
         rampFramesLeft = 0
         targetPid = 0
+        targetLocation = .zero
         lock.unlock()
         stopDriver()
     }
@@ -279,6 +291,7 @@ final class SmoothScroller {
         let wholeY = Int32(exactY.rounded(.towardZero))
 
         let pid = targetPid
+        let location = targetLocation
         framesTicked += 1
         if settled {
             buffer = (0, 0)
@@ -295,7 +308,8 @@ final class SmoothScroller {
         // 发 0 像素看着浪费，但发不发决定了连贯性——应用靠"有没有事件"判断手势还在不在，
         // 断拍会被当成滚动结束。Mos 的实测帧流里同样有 0 像素帧，而它的节拍是满的。
         if runsDriver {
-            post(wholeX: wholeX, wholeY: wholeY, dx: exactX, dy: exactY, pid: pid)
+            post(wholeX: wholeX, wholeY: wholeY, dx: exactX, dy: exactY,
+                 pid: pid, location: location)
             lock.lock()
             delivered.x = current.x
             delivered.y = current.y
@@ -323,13 +337,17 @@ final class SmoothScroller {
     /// 会话层回发要重新过一遍窗口服务器的命中测试和 tap 链，每帧多一跳延迟，还会
     /// 被别的同类工具（比如同时开着的 Mos）再处理一次。直投就是"这条事件只给这个
     /// 进程"，剩下的判断交回给应用自己。
-    private func post(wholeX: Int32, wholeY: Int32, dx: Double, dy: Double, pid: pid_t) {
+    private func post(wholeX: Int32, wholeY: Int32, dx: Double, dy: Double,
+                      pid: pid_t, location: CGPoint) {
         guard let event = CGEvent(scrollWheelEvent2Source: nil,
                                   units: .pixel,
                                   wheelCount: 2,
                                   wheel1: wholeY,
                                   wheel2: wholeX,
                                   wheel3: 0) else { return }
+        // 直投时这条是命门：位置不对，应用内命中不到窗口就整条丢弃
+        // location 拿不到（理论上不该发生）就退回当前光标位置，宁可偏一点也别整条废掉
+        event.location = (location == .zero ? (CGEvent(source: nil)?.location ?? .zero) : location)
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1,
                                    value: Int64((dy * 65536).rounded()))
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2,

@@ -331,10 +331,12 @@ final class GestureEngine {
         // 测试反而多一跳延迟。pid 取不到（或目标是我们自己）就退回会话层回发。
         var targetPid = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
         if targetPid <= 0 { targetPid = 0 }
+        // 直投还得带上鼠标位置：应用是拿 event.location 自己判断该滚哪个窗口的
         scroller.feed(pixelsX: dx * strength, pixelsY: dy * strength,
                       duration: store.settings.smoothScrollDuration,
                       gain: store.settings.smoothScrollGain,
-                      targetPid: targetPid)
+                      targetPid: targetPid,
+                      targetLocation: event.location)
         return true
     }
 
