@@ -55,25 +55,10 @@ final class SmoothScroller {
     private let deadZone: Double = 0.35
     /// 判定"上一次还没走完"的余量（像素）
     private let busyThreshold: Double = 1.0
-    /// 收尾阈值：剩余距离和本帧速度都低于它就算走完（MMF 的 stopTolerance）
-    ///
-    /// 🔴 取 1px 而不是更小，**而且收尾之前一帧都不能丢**：
-    ///   ① 丢帧（"不足 1px 就不发"）看着像省事，实测会把尾巴变成
-    ///      34 / 33 / 50 / 68ms 的空档——滚动管线以为手势断了，比发 0 像素更难 看；
-    ///   ② 不提前收又会一直爬 0.2px 爬两百毫秒。
-    /// 所以：节拍保持满帧，剩 1px 时一刀切。Mos 实测也是这样（28 帧全程 16.7ms）。
-    static let stopTolerance: Double = 1.0
+    /// 收尾阈值：剩余距离和本帧速度都低于它才算走完（MMF 的 stopTolerance）
+    private let stopTolerance: Double = 0.5
     /// display link 起不来时的兜底节拍
     private let fallbackInterval: TimeInterval = 1.0 / 120
-
-    /// 起步斜坡：从静止起手时，前几帧只走这个比例（Mos 的曲线峰值滤波器
-    /// 0.23 / 0.5 / 0.77）。
-    ///
-    /// 没有它的话第一帧就窜出 15% 的总位移（180px 的一格 = 27px / 16.7ms，
-    /// 瞬时速度 1600px/s），观感是"先顿一下再滑"；有了它起步是软的。
-    /// 🔴 缩放的是**这一帧的步长**，不是目标位移，所以总距离一分不少——
-    /// 差额留在 buffer 里，指数逼近自然会补回来。
-    static let rampWeights: [Double] = [0.23, 0.5, 0.77]
 
     // MARK: - 状态（锁保护：feed 在主线程，逐帧回调在显示链接线程）
 
@@ -83,39 +68,8 @@ final class SmoothScroller {
     private(set) var current = (x: 0.0, y: 0.0)
     /// 上一笔输入的方向，用来判"同向累加 / 反向重来"
     private var lastInput = (x: 0.0, y: 0.0)
-    /// 已经真正发出去的位移（`current` 是"应该画到哪"，它是"画到了哪"）
-    ///
-    /// 🔴 这两个必须分开记：小于 1px 的帧被丢掉时 `current` 照样前进，但那部分
-    /// 位移还没发出去，要攒到下一帧一起补。早先用 `carry` 记零头、又把它同时算进
-    /// 本帧的位移，结果一档滚轮多滚了 5.8px（实测）。
-    private var delivered = (x: 0.0, y: 0.0)
-    /// 起步斜坡还剩几帧
-    private(set) var rampFramesLeft = 0
-
-    /// 这一轮滚动的目标进程（`CGEventPostToPid` 直投用）。
-    ///
-    /// 🔴 直投是为了绕开"回发到会话层再让窗口服务器重新命中测试"这一跳。
-    /// 代价是系统不再帮我们判断"现在光标在谁身上"，所以**目标一变就得把残量扔掉**，
-    /// 否则滚动动画会把剩下的几十像素打到用户新切过去的窗口上。
-    private(set) var targetPid: pid_t = 0
-
-    /// 这一轮滚动的鼠标位置（全局坐标）。
-    ///
-    /// 🔴 直投之后，**应用是拿 `event.location` 自己判断"该滚哪个窗口"的**
-    /// （Mos 的注释原话：进程内通过 event.location 做窗口级 hit-testing）。
-    /// 新建的 CGEvent 位置是 (0,0)，进程里命中不到任何窗口 → 事件被静默丢弃，
-    /// 表现就是"开关开着、日志说派了 45 条，屏幕上一点不动"。
-    /// 回发到会话层时不用管这个，窗口服务器会替我们路由，直投就必须自己带上。
-    private(set) var targetLocation: CGPoint = .zero
-
-    /// 原始滚轮事件的副本，当作派发模板（Mos 的 `ScrollDispatchContext.eventTemplate`）。
-    ///
-    /// 🔴 不要自己新建事件：滚轮事件里除了位移，还带着**窗口相关字段**
-    /// （`mouseEventWindowUnderMousePointer` 之类）和设备上下文。新建的事件这些全是空值，
-    /// 应用拿到之后找不到该滚哪个窗口就直接丢。实测：AppKit 的 TextEdit 和 Chrome 能认，
-    /// Electron 的 WorkBuddy 一条都不动——日志说派了 25 条，屏幕纹丝不动。
-    /// 克隆原事件改位移，这些字段天然是对的。
-    private var template: CGEvent?
+    /// 攒着的不足一帧的位移
+    private var carry = (x: 0.0, y: 0.0)
 
     private var duration: Double = SmoothScroller.defaultDuration
     private var gain: Double = SmoothScroller.defaultGain
@@ -133,22 +87,10 @@ final class SmoothScroller {
     /// 自检用：置 false 时只算状态、不真派发事件（否则跑自检会把当前应用滚一下）
     var runsDriver = true
 
-    /// 派发方式。
-    ///
-    /// 🔴 默认**回发到会话层**，不走 `CGEventPostToPid` 直投，尽管直投延迟更低。
-    /// 原因：直投对 Electron 应用无效——实测 Edge(Chrome) / TextEdit 都认，
-    /// 但 WorkBuddy 一条都不动（同一格滚轮，裸事件能滚 0.34%，我们派的帧只有 0.07%
-    /// 的噪声）。克隆原事件当模板也没解决，说明差异不在窗口字段上，还有别的字段要
-    /// 逐个试。功能优先：先保住"能滚"，等把字段差异摸清楚了再切回直投。
-    static var preferDirectPosting = false
-
     /// 派发过多少条事件（诊断/自检看"到底有没有动"）
     private(set) var dispatchedEvents = 0
     /// 跑过多少帧（诊断用：和事件数一起看，能区分"没帧"和"有帧但没位移"）
     private(set) var framesTicked = 0
-    /// 这一轮开始时两个计数器的读数，收尾时相减得到"这一轮发了多少"
-    private var burstFrameBase = 0
-    private var burstPostBase = 0
 
     // MARK: - 输入
 
@@ -157,30 +99,13 @@ final class SmoothScroller {
     /// - Parameters:
     ///   - duration: 缓动总时长（秒），内部换算成时间常数 τ = duration/3
     ///   - gain: 连续滚动时的速度增益，1.0 = 不加速
-    ///   - targetPid: 这条输入要投给哪个进程（原事件的 `eventTargetUnixProcessID`）。
-    ///     给 0 就退回"回发到会话层"的老路径。
     func feed(pixelsX: Double, pixelsY: Double,
               duration: Double = SmoothScroller.defaultDuration,
-              gain: Double = SmoothScroller.defaultGain,
-              targetPid: pid_t = 0,
-              targetLocation: CGPoint? = nil,
-              template: CGEvent? = nil) {
+              gain: Double = SmoothScroller.defaultGain) {
         guard pixelsX != 0 || pixelsY != 0 else { return }
 
         lock.lock()
         self.duration = min(0.6, max(0.06, duration))
-
-        // 目标换了：先把残量扔掉再接受新输入（否则残帧会打到新窗口）
-        if targetPid != 0, self.targetPid != 0, targetPid != self.targetPid {
-            buffer = (0, 0)
-            current = (0, 0)
-            delivered = (0, 0)
-            lastInput = (0, 0)
-            rampFramesLeft = 0
-        }
-        if targetPid != 0 { self.targetPid = targetPid }
-        if let targetLocation { self.targetLocation = targetLocation }
-        if let template { self.template = template.copy() }
 
         // 连续滚动才吃增益：上一次还没走完，说明用户在接着滚。
         // 单格滚轮不加速，否则"轻轻滚一格"也会冲出去，和预期不符。
@@ -188,43 +113,28 @@ final class SmoothScroller {
             || abs(buffer.y - current.y) > busyThreshold
         let multiplier = busy ? min(4.0, max(1.0, gain)) : 1.0
 
-        // 从静止起手才做起步斜坡。连续滚动中途不做——否则每加一格都重新软一下，
-        // 快滚的时候会一顿一顿的。
-        if !busy { rampFramesLeft = Self.rampWeights.count }
-
         // 同向 → 累加到目标；反向 → 目标换成新值，已画出的量归零
         if pixelsY * lastInput.y > 0 {
             buffer.y += pixelsY * multiplier
         } else {
             buffer.y = pixelsY * multiplier
             current.y = 0
-            delivered.y = 0
+            carry.y = 0
         }
         if pixelsX * lastInput.x > 0 {
             buffer.x += pixelsX * multiplier
         } else {
             buffer.x = pixelsX * multiplier
             current.x = 0
-            delivered.x = 0
+            carry.x = 0
         }
         lastInput = (x: pixelsX, y: pixelsY)
         lastFrameTime = 0
 
         let needStart = !driverRunning
-        let logPid = targetPid
         lock.unlock()
 
-        // 一轮开头写一行诊断：滚了多少、投给谁。用户报"滚轮没反应"时，
-        // 看这行就知道是没进引擎、还是进了但投错了目标。
-        TrackpadEngine.trace(String(format: "滚轮 输入 %.1f/%.1f px → 目标 pid %d%@",
-                                    pixelsX, pixelsY, logPid,
-                                    needStart ? "（起步）" : "（续滚）"))
-
-        if needStart {
-            burstFrameBase = framesTicked
-            burstPostBase = dispatchedEvents
-            startDriver()
-        }
+        if needStart { startDriver() }
     }
 
     /// 把待滚位移全部扔掉（关开关、停引擎、切应用时用）
@@ -232,13 +142,9 @@ final class SmoothScroller {
         lock.lock()
         buffer = (0, 0)
         current = (0, 0)
-        delivered = (0, 0)
+        carry = (0, 0)
         lastInput = (0, 0)
         lastFrameTime = 0
-        rampFramesLeft = 0
-        targetPid = 0
-        targetLocation = .zero
-        template = nil
         lock.unlock()
         stopDriver()
     }
@@ -248,7 +154,7 @@ final class SmoothScroller {
         defer { lock.unlock() }
         return abs(buffer.x - current.x) < deadZone
             && abs(buffer.y - current.y) < deadZone
-            && delivered.x == current.x && delivered.y == current.y
+            && carry.x == 0 && carry.y == 0
     }
 
     // MARK: - 逐帧逼近
@@ -273,17 +179,6 @@ final class SmoothScroller {
         let factor = Self.frameFactor(dt: dt, duration: duration)
         var stepX = (buffer.x - current.x) * factor
         var stepY = (buffer.y - current.y) * factor
-
-        // 起步斜坡：头几帧只走其中一部分，差额留在 buffer 里由指数逼近补回来，
-        // 所以总位移不变，只是前 3 帧（约 50ms）速度爬坡。
-        if rampFramesLeft > 0 {
-            let index = Self.rampWeights.count - rampFramesLeft
-            let weight = Self.rampWeights[min(index, Self.rampWeights.count - 1)]
-            stepX *= weight
-            stepY *= weight
-            rampFramesLeft -= 1
-        }
-
         stepX = min(maxFramePixels, max(-maxFramePixels, stepX))
         stepY = min(maxFramePixels, max(-maxFramePixels, stepY))
 
@@ -293,8 +188,8 @@ final class SmoothScroller {
         let restX = buffer.x - current.x
         let restY = buffer.y - current.y
         // 收尾：剩下的距离和这一帧的速度都小到看不见（MMF 的 stopTolerance）
-        let settled = abs(restX) < Self.stopTolerance && abs(restY) < Self.stopTolerance
-            && abs(stepX) < Self.stopTolerance && abs(stepY) < Self.stopTolerance
+        let settled = abs(restX) < stopTolerance && abs(restY) < stopTolerance
+            && abs(stepX) < stopTolerance && abs(stepY) < stopTolerance
         if settled {
             // 收尾帧：残余一起补上，保证总位移与输入严格相等
             stepX += restX
@@ -302,47 +197,32 @@ final class SmoothScroller {
             current = buffer
         }
 
-        // 这一帧该补出去的位移 = 应该画到的 − 已经发出去的。
-        // 🔴 pointDelta 只存整数（实测写 3.4 读回 3.0、写 0.4 变 0），所以整数部分
-        // 给它、完整的量给 FixedPt；被丢掉的那些帧不推进 `delivered`，零头自动
-        // 攒到下一帧，一档滚轮一分都不会漏。
-        let exactX = current.x - delivered.x
-        let exactY = current.y - delivered.y
-        let wholeX = Int32(exactX.rounded(.towardZero))
-        let wholeY = Int32(exactY.rounded(.towardZero))
+        // 整数部分给 pointDelta，余下的零头攒到下一帧——
+        // 🔴 pointDelta 只能存整数，小数部分不自己攒就会一帧一帧地漏掉
+        // （实测一档滚轮能漏掉 1/4 的位移）。小数本身走 FixedPt 不丢。
+        let wholeX = Int32((stepX + carry.x).rounded(.towardZero))
+        let wholeY = Int32((stepY + carry.y).rounded(.towardZero))
+        carry.x = stepX + carry.x - Double(wholeX)
+        carry.y = stepY + carry.y - Double(wholeY)
 
-        let pid = targetPid
-        let location = targetLocation
-        let tpl = template
         framesTicked += 1
         if settled {
             buffer = (0, 0)
             current = (0, 0)
             lastInput = (0, 0)
             lastFrameTime = 0
-            delivered = (0, 0)
-            rampFramesLeft = 0
-            targetPid = 0
+            carry = (0, 0)
         }
         lock.unlock()
 
-        // 🔴 每一拍都发，哪怕这一帧的整数位移是 0：
-        // 发 0 像素看着浪费，但发不发决定了连贯性——应用靠"有没有事件"判断手势还在不在，
-        // 断拍会被当成滚动结束。Mos 的实测帧流里同样有 0 像素帧，而它的节拍是满的。
-        if runsDriver {
-            post(wholeX: wholeX, wholeY: wholeY, dx: exactX, dy: exactY,
-                 pid: pid, location: location, template: tpl)
-            lock.lock()
-            delivered.x = current.x
-            delivered.y = current.y
-            lock.unlock()
+        // 每拍都发：攒着不发会让帧间隔变成 2、3 个刷新周期，看着就是顿
+        if runsDriver, stepX != 0 || stepY != 0 {
+            post(wholeX: wholeX, wholeY: wholeY, dx: stepX, dy: stepY)
         }
         if settled {
             stopDriver()
-            TrackpadEngine.trace("滚轮 收尾：\(framesTicked - burstFrameBase) 帧 / 派出 \(dispatchedEvents - burstPostBase) 条")
         }
     }
-
 
     // MARK: - 派发
 
@@ -354,50 +234,22 @@ final class SmoothScroller {
     ///   下一帧，否则一档滚轮会漏掉四分之一。
     /// - `FixedPtDelta`（16.16 定点）：NSEvent 的 `scrollingDeltaY` 走这条，
     ///   能吃到亚像素，尾部那种 0.6px 的小步才不会变成"一秒一下"。
-    ///
-    /// 🔴 投递走 `CGEventPostToPid`，不回发到会话层（Mos 的做法，见它 PR #523）：
-    /// 会话层回发要重新过一遍窗口服务器的命中测试和 tap 链，每帧多一跳延迟，还会
-    /// 被别的同类工具（比如同时开着的 Mos）再处理一次。直投就是"这条事件只给这个
-    /// 进程"，剩下的判断交回给应用自己。
-    private func post(wholeX: Int32, wholeY: Int32, dx: Double, dy: Double,
-                      pid: pid_t, location: CGPoint, template: CGEvent?) {
-        let event: CGEvent
-        if let clone = template?.copy() {
-            event = clone
-            // 先把行位移归零：写 Delta 会联动重算 Point/Fixed（带取整、不可逆），
-            // 所以顺序必须是「先归零 Delta，再写像素」。
-            // 不归零的话，只读行位移的应用会拿模板里那 3 行又滚一遍。
-            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
-            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: 0)
-        } else {
-            guard let fresh = CGEvent(scrollWheelEvent2Source: nil,
-                                      units: .pixel,
-                                      wheelCount: 2,
-                                      wheel1: wholeY,
-                                      wheel2: wholeX,
-                                      wheel3: 0) else { return }
-            event = fresh
-        }
-        // 直投时这条是命门：位置不对，应用内命中不到窗口就整条丢弃
-        // location 拿不到（理论上不该发生）就退回当前光标位置，宁可偏一点也别整条废掉
-        event.location = (location == .zero ? (CGEvent(source: nil)?.location ?? .zero) : location)
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(wholeY))
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(wholeX))
+    private func post(wholeX: Int32, wholeY: Int32, dx: Double, dy: Double) {
+        guard let event = CGEvent(scrollWheelEvent2Source: nil,
+                                  units: .pixel,
+                                  wheelCount: 2,
+                                  wheel1: wholeY,
+                                  wheel2: wholeX,
+                                  wheel3: 0) else { return }
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1,
                                    value: Int64((dy * 65536).rounded()))
         event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2,
                                    value: Int64((dx * 65536).rounded()))
         // 连续事件：浏览器据此走像素滚动，而不是"一格一格跳"
         event.setDoubleValueField(.scrollWheelEventIsContinuous, value: 1)
-        // 🔴 不打这个标记，事件会再次进我们自己的 tap → 死循环（退回会话层时才会撞上）
+        // 🔴 不打这个标记，事件会再次进我们自己的 tap → 死循环
         event.setIntegerValueField(.eventSourceUserData, value: GestureEngine.replayMark)
-        if pid > 0, Self.preferDirectPosting {
-            event.postToPid(pid)
-        } else {
-            // 回发到会话层：窗口服务器替我们做命中测试与窗口路由，
-            // 位置/窗口字段缺了也不要紧（这也是它比直投稳的原因）
-            event.post(tap: .cgSessionEventTap)
-        }
+        event.post(tap: .cgSessionEventTap)
         dispatchedEvents += 1
     }
 

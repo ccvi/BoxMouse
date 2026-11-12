@@ -1007,46 +1007,6 @@ enum SelfTest {
               "reset 之后立刻回空闲（关开关时不能残留余量继续滚）")
         check(SmoothScroller.baseLineHeight > 0,
               "一档滚轮折算的像素高度为正（\(SmoothScroller.baseLineHeight)）")
-
-        // ⑥ 起步斜坡：从静止起手才软一下，连续滚动中途不重来
-        check(SmoothScroller.rampWeights == [0.23, 0.5, 0.77],
-              "起步斜坡沿用 Mos 曲线窗口的 0.23 / 0.5 / 0.77（实际 \(SmoothScroller.rampWeights)）")
-        check(zip(SmoothScroller.rampWeights, SmoothScroller.rampWeights.dropFirst())
-                .allSatisfy { $0 < $1 } && SmoothScroller.rampWeights.last! < 1.0,
-              "斜坡权重递增且最后一档仍小于 1（收尾交给指数逼近）")
-
-        let ramp = SmoothScroller()
-        ramp.runsDriver = false
-        ramp.feed(pixelsX: 0, pixelsY: 120)
-        check(ramp.rampFramesLeft == SmoothScroller.rampWeights.count,
-              "从静止起手 → 斜坡排 3 帧（实际 \(ramp.rampFramesLeft)）")
-        ramp.feed(pixelsX: 0, pixelsY: 120)
-        check(ramp.rampFramesLeft == SmoothScroller.rampWeights.count,
-              "🔴 连续滚动中途再加一格不重排斜坡（重排会让快滚一顿一顿）")
-
-        // ⑦ 收尾必须在 1px 处一刀切，且收尾之前一帧都不能丢
-        check(SmoothScroller.stopTolerance >= 1.0,
-              "收尾阈值取到 1px（实际 \(SmoothScroller.stopTolerance)）——更小的话尾巴会爬两百毫秒")
-        check(SmoothScroller.stopTolerance < 4.0,
-              "阈值也别太狠，否则最后几像素直接看不见了")
-
-        // ⑧ 直投目标进程：目标一变先丢残量，别把剩下的几十像素打到新窗口
-        let direct = SmoothScroller()
-        direct.runsDriver = false
-        direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 1001,
-                    targetLocation: CGPoint(x: 640, y: 400))
-        check(direct.targetPid == 1001, "记下这一轮的目标进程（\(direct.targetPid)）")
-        check(direct.targetLocation == CGPoint(x: 640, y: 400),
-              "🔴 记下这一轮的鼠标位置（直投靠它让应用命中窗口，缺了就是「派了 45 条但屏幕不动」）")
-        direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 1001)
-        check(direct.buffer.y == 200,
-              "同一个目标 → 同向累加到 200（\(direct.buffer.y)）")
-        direct.feed(pixelsX: 0, pixelsY: 100, targetPid: 2002)
-        check(direct.targetPid == 2002 && direct.buffer.y == 100,
-              "🔴 目标变了 → 先丢掉残量再接受新输入（buffer \(direct.buffer.y)，目标 \(direct.targetPid)）")
-        direct.reset()
-        check(direct.targetPid == 0 && direct.rampFramesLeft == 0,
-              "reset 之后目标与斜坡都清空")
     }
 
     private static func testWindowOps() {
