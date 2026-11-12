@@ -327,9 +327,14 @@ final class GestureEngine {
         guard dx != 0 || dy != 0 else { return false }
 
         let strength = min(3.0, max(0.2, store.settings.smoothScrollStrength))
+        // 直投目标进程：原事件里带着"这一下该滚谁"的答案，交给窗口服务器重新命中
+        // 测试反而多一跳延迟。pid 取不到（或目标是我们自己）就退回会话层回发。
+        var targetPid = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
+        if targetPid <= 0 { targetPid = 0 }
         scroller.feed(pixelsX: dx * strength, pixelsY: dy * strength,
                       duration: store.settings.smoothScrollDuration,
-                      gain: store.settings.smoothScrollGain)
+                      gain: store.settings.smoothScrollGain,
+                      targetPid: targetPid)
         return true
     }
 
