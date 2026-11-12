@@ -906,18 +906,47 @@ enum SelfTest {
               "Back Button 的动作存下来了（\(back.backButtonAction?.windowOp?.rawValue ?? "nil")）")
         check(back.smoothScrollStrength == 1.6, "滚动距离倍率存下来了")
 
-        // ⑤ 平滑滚轮的待滚队列
+        // ⑤ 平滑滚轮：帧系数 + 目标累加语义
         //
-        // 只验证状态机（进/出忙态、清空），真派发要跑 run loop。
-        // ⚠️ feed 之后可能派出一两帧真实滚动事件（<40px），reset 立刻停住。
+        // 逐帧派发要真跑显示链接，自检不碰（`runsDriver = false` 只算状态）。
+        // 这里钉的是两件容易写错的事：系数必须帧率无关、同向累加反向清零。
+        let dt = 1.0 / 120.0
+        let factor = SmoothScroller.frameFactor(dt: dt, duration: 0.22)
+        check(factor > 0.05 && factor < 0.25,
+              "120Hz 下一帧走 \(String(format: "%.3f", factor)) 的余量（0.05–0.25 之间才既跟手又不跳）")
+        check(SmoothScroller.frameFactor(dt: 0, duration: 0.22) == 0,
+              "dt 为 0 时不推进（避免重复回调原地抽动）")
+        let f1 = SmoothScroller.frameFactor(dt: 0.008, duration: 0.22)
+        let f2 = SmoothScroller.frameFactor(dt: 0.016, duration: 0.22)
+        check(f2 > f1, "dt 越大这一帧走得越多（系数随 dt 单调）")
+        // 🔴 帧率无关：两帧 8ms 和一帧 16ms 走出来的总比例必须几乎相同。
+        // 用固定系数（Mos 的写法）在 60Hz / 120Hz 上手感会差一倍，这正是要避免的。
+        let twoSteps = 1 - (1 - f1) * (1 - f1)
+        check(abs(twoSteps - f2) < 0.02,
+              "两帧 8ms 与一帧 16ms 推进量一致（\(String(format: "%.3f", twoSteps)) vs \(String(format: "%.3f", f2))，换屏幕不变调）")
+        let doneFactor = SmoothScroller.frameFactor(dt: 0.22, duration: 0.22)
+        check(doneFactor > 0.9,
+              "一个「缓动时长」之后已走完 \(Int(doneFactor * 100))%（应 > 90%）")
+
         let scroller = SmoothScroller()
+        scroller.runsDriver = false   // 只算状态，别真往系统里发滚动事件
         check(scroller.isIdle, "平滑滚轮初始空闲")
         scroller.feed(pixelsX: 0, pixelsY: 0)
-        check(scroller.isIdle, "喂 0 位移不启动派发（否则会空转出一串 0 像素事件）")
-        scroller.feed(pixelsX: 12, pixelsY: -40)
-        check(!scroller.isIdle, "喂了真实位移之后进入派发状态")
+        check(scroller.isIdle, "喂 0 位移不动手（否则会空转出一串 0 像素事件）")
+
+        scroller.feed(pixelsX: 0, pixelsY: 48)
+        check(scroller.buffer.y == 48 && scroller.current.y == 0,
+              "喂一格滚轮后目标位移 = 48、已画 = 0（\(scroller.buffer.y) / \(scroller.current.y)）")
+        check(!scroller.isIdle, "有未走完的位移时不是空闲")
+        scroller.feed(pixelsX: 0, pixelsY: 48)
+        check(scroller.buffer.y == 96,
+              "同向再喂一格 → 累加到 96（越滚越快靠的就是这个，\(scroller.buffer.y)）")
+        scroller.feed(pixelsX: 0, pixelsY: -30)
+        check(scroller.buffer.y == -30 && scroller.current.y == 0,
+              "反向输入 → 目标直接换成新值、已画归零（否则会继续往原方向飘）")
         scroller.reset()
-        check(scroller.isIdle, "reset 之后立刻回空闲（关开关时不能残留余量继续滚）")
+        check(scroller.isIdle && scroller.buffer.y == 0,
+              "reset 之后立刻回空闲（关开关时不能残留余量继续滚）")
         check(SmoothScroller.baseLineHeight > 0,
               "一档滚轮折算的像素高度为正（\(SmoothScroller.baseLineHeight)）")
     }

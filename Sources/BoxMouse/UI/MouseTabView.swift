@@ -113,27 +113,38 @@ struct MouseTabView: View {
                         .labelsHidden()
                 }
 
-                HStack(spacing: 10) {
-                    Text("滚动距离")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.secondaryText)
-                        .frame(width: 56, alignment: .leading)
-                    Text("短")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.secondaryText)
-                    Slider(value: settings.smoothScrollStrength, in: 0.5...2.0, step: 0.1)
-                        .controlSize(.small)
-                    Text("长")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.secondaryText)
-                    Text(String(format: "%.1f×", model.store.settings.smoothScrollStrength))
-                        .font(.system(size: 11, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(smoothing ? Color.primary : Theme.secondaryText)
-                        .frame(width: 38, alignment: .trailing)
+                VStack(spacing: 8) {
+                    sliderRow(title: "滚动距离",
+                              value: settings.smoothScrollStrength,
+                              range: 0.5...2.0,
+                              step: 0.1,
+                              leftHint: "短",
+                              rightHint: "长",
+                              readout: String(format: "%.1f×", model.store.settings.smoothScrollStrength))
+                    sliderRow(title: "缓动时长",
+                              value: settings.smoothScrollDuration,
+                              range: 0.10...0.50,
+                              step: 0.01,
+                              leftHint: "紧凑",
+                              rightHint: "悠长",
+                              readout: "\(Int((model.store.settings.smoothScrollDuration * 1000).rounded())) ms")
+                    sliderRow(title: "速度增益",
+                              value: settings.smoothScrollGain,
+                              range: 1.0...3.0,
+                              step: 0.1,
+                              leftHint: "匀速",
+                              rightHint: "越滚越快",
+                              readout: String(format: "%.1f×", model.store.settings.smoothScrollGain))
                 }
                 .disabled(!smoothing)
                 .opacity(smoothing ? 1 : 0.5)
+
+                Text("缓动时长太短会「顿」，太长会「黏」，220–280 ms 最接近系统触控板的观感。"
+                     + "速度增益只在连续滚动时生效，单格滚轮不加速。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(smoothing ? 1 : 0.5)
 
                 Divider().opacity(0.4)
 
@@ -151,6 +162,39 @@ struct MouseTabView: View {
                         .labelsHidden()
                 }
             }
+        }
+    }
+
+    /// 一行「标题 + 左提示 + 滑杆 + 右提示 + 读数」。
+    /// 三条参数用同一套骨架，眼动轨迹才一致；读数右对齐固定宽度，拖动时数字不会左右跳。
+    private func sliderRow(title: String,
+                           value: Binding<Double>,
+                           range: ClosedRange<Double>,
+                           step: Double,
+                           leftHint: String,
+                           rightHint: String,
+                           readout: String) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 56, alignment: .leading)
+            // 三个提示位都定宽：不定宽时"短"和"紧凑"宽度不同，三条滑杆的
+            // 起止点会各错开几像素，看着像没对齐
+            Text(leftHint)
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 28, alignment: .trailing)
+            Slider(value: value, in: range, step: step)
+                .controlSize(.small)
+            Text(rightHint)
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 52, alignment: .leading)
+            Text(readout)
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+                .frame(width: 56, alignment: .trailing)
         }
     }
 

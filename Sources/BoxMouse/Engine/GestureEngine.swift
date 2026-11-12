@@ -307,7 +307,9 @@ final class GestureEngine {
         guard dx != 0 || dy != 0 else { return false }
 
         let strength = min(3.0, max(0.2, store.settings.smoothScrollStrength))
-        scroller.feed(pixelsX: dx * strength, pixelsY: dy * strength)
+        scroller.feed(pixelsX: dx * strength, pixelsY: dy * strength,
+                      duration: store.settings.smoothScrollDuration,
+                      gain: store.settings.smoothScrollGain)
         return true
     }
 
