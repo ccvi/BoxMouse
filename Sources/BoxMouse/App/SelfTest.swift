@@ -814,6 +814,19 @@ enum SelfTest {
             check(false, "能创建触控板式滚轮事件")
         }
 
+        // ①b 反方向的作用范围：只翻鼠标滚轮，不翻触控板
+        //
+        // 用户实际踩到的坑：开了鼠标控制之后触控板方向跟着反了。方向本该归系统
+        // 「自然滚动」管，我们再翻一次等于把用户的系统偏好撤销掉。
+        check(GestureEngine.shouldInvertScroll(invertEnabled: true, isContinuous: false),
+              "反方向：离散滚轮 + 开关打开 → 翻")
+        check(!GestureEngine.shouldInvertScroll(invertEnabled: false, isContinuous: false),
+              "反方向：离散滚轮 + 开关关着 → 不翻")
+        check(!GestureEngine.shouldInvertScroll(invertEnabled: true, isContinuous: true),
+              "🔴 反方向：触控板 / 妙控鼠标（连续事件）→ 不翻（方向交给系统自然滚动）")
+        check(!GestureEngine.shouldInvertScroll(invertEnabled: false, isContinuous: true),
+              "反方向：连续事件 + 开关关着 → 不翻")
+
         // 老式「只有行数」的事件：像素位移为 0，只能靠 Delta 翻
         if let line = CGEvent(scrollWheelEvent2Source: nil, units: .line,
                               wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0) {

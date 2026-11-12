@@ -154,7 +154,7 @@ struct MouseTabView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("滚轮反方向")
                             .font(.system(size: 12.5))
-                        Text("上下和左右一起反转。触控板、妙控鼠标也一起生效。")
+                        Text("上下和左右一起反转。只影响鼠标滚轮，触控板仍按系统「自然滚动」的方向。")
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.secondaryText)
                     }
@@ -374,7 +374,7 @@ struct MouseTabView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Theme.secondaryText)
                     Text("· 平滑滚动只作用于鼠标的离散滚轮。触控板那种带惯性的连续滚动系统已经处理过，再来一遍会发飘。\n"
-                         + "· 反方向是原地翻转事件里的位移，不重建事件，所以触控板的惯性不会被切断。\n"
+                         + "· 反方向和加速键也不碰触控板的方向：触摸板的方向归系统「自然滚动」管，我们翻一次等于把用户的偏好撤销掉。\n"
                          + "· 侧键一旦配了动作，那颗键就不再能画轨迹；把它的开关关掉就恢复成按住画轨迹。")
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.secondaryText)

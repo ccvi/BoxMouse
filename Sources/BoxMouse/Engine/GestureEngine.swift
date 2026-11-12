@@ -278,8 +278,11 @@ final class GestureEngine {
     ///
     /// 返回 true 表示"这条事件归我们了"，调用方吞掉它。
     ///
-    /// 🔴 触控板 / 妙控鼠标（`IsContinuous = 1`）**不做平滑**：系统已经给过
-    /// 平滑和惯性，再来一遍就是双重缓动，手感会发飘。它们只处理反方向。
+    /// 🔴 触控板 / 妙控鼠标（`IsContinuous = 1`）**不做平滑、也不翻方向**：
+    /// 系统已经给过平滑和惯性，再来一遍就是双重缓动，手感会发飘；方向更该交给
+    /// 系统设置里的「自然滚动」——那是用户自己定过的偏好，我们翻一次等于把它撤销，
+    /// 而且用户点「滚轮反方向」时想的多半是"我这只鼠标的滚轮反了"，不是"把我的
+    /// 触控板也反过来"。这类事件只处理加速键（倍率不改方向）。
     private func handleScroll(_ event: CGEvent) -> Bool {
         guard store.settings.mouseControlEnabled else { return false }
         let smooth = store.settings.smoothScrollEnabled
@@ -290,12 +293,20 @@ final class GestureEngine {
 
         let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
 
-        if isContinuous || !smooth {
-            guard invert || boost != 1.0 else { return false }
+        if isContinuous {
             // 原地改完放行：保留 phase / momentumPhase，触控板的惯性不会被切断。
+            guard boost != 1.0 else { return false }
+            Self.scaleScrollFields(event, by: boost)
+            return false
+        }
+
+        if !smooth {
+            guard invert || boost != 1.0 else { return false }
             // 先缩再翻（乘法可交换），两件事合成一次字段遍历。
             Self.scaleScrollFields(event, by: boost)
-            if invert { Self.flipScrollFields(event) }
+            if Self.shouldInvertScroll(invertEnabled: invert, isContinuous: isContinuous) {
+                Self.flipScrollFields(event)
+            }
             return false
         }
 
@@ -307,7 +318,10 @@ final class GestureEngine {
             dx = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis2)) * SmoothScroller.baseLineHeight
             dy = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * SmoothScroller.baseLineHeight
         }
-        if invert { dx = -dx; dy = -dy }
+        if Self.shouldInvertScroll(invertEnabled: invert, isContinuous: isContinuous) {
+            dx = -dx
+            dy = -dy
+        }
         dx *= boost
         dy *= boost
         guard dx != 0 || dy != 0 else { return false }
@@ -317,6 +331,16 @@ final class GestureEngine {
                       duration: store.settings.smoothScrollDuration,
                       gain: store.settings.smoothScrollGain)
         return true
+    }
+
+    /// 「滚轮反方向」该不该落在这条事件上。
+    ///
+    /// 🔴 **只作用于离散滚轮**（`IsContinuous = 0`）。触控板 / 妙控鼠标的方向由系统
+    /// 设置里的「自然滚动」决定——那是用户自己定过的偏好，我们再翻一次等于把它撤销。
+    /// 用户看到的现象就是"一开鼠标控制，触控板方向就反了"，而且他点「滚轮反方向」
+    /// 时想的多半是"我这只鼠标的滚轮反了"，不是"把我的触控板也反过来"。
+    static func shouldInvertScroll(invertEnabled: Bool, isContinuous: Bool) -> Bool {
+        invertEnabled && !isContinuous
     }
 
     /// 把一条滚轮事件的位移方向翻过来。
