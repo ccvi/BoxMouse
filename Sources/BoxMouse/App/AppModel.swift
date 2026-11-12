@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 
 enum MainTab: String, CaseIterable, Identifiable {
     case gestures
+    case mouse
     case general
     case permissions
     case about
@@ -22,6 +23,7 @@ enum MainTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .gestures:    return "手势"
+        case .mouse:       return "鼠标"
         case .general:     return "通用"
         case .permissions: return "权限"
         case .about:       return "关于"
@@ -31,6 +33,7 @@ enum MainTab: String, CaseIterable, Identifiable {
     var symbolName: String {
         switch self {
         case .gestures:    return "hand.draw"
+        case .mouse:       return "computermouse"
         case .general:     return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about:       return "info.circle"
@@ -146,6 +149,16 @@ final class AppModel: ObservableObject {
     func bootstrap() {
         hasAccessibility = Permissions.hasAccessibility
         hasInputMonitoring = Permissions.hasInputMonitoring
+
+        // 诊断用一次性开关：`defaults write com.pcxx.boxmousemac openTab mouse`
+        // 后启动直接落到指定标签页，供自动化截图用。读完立刻删，
+        // 正常使用不会有人去写它（和 demoRecentFires 同一性质）。
+        if let wanted = UserDefaults.standard.string(forKey: "openTab"),
+           let tab = MainTab(rawValue: wanted) {
+            UserDefaults.standard.removeObject(forKey: "openTab")
+            selectedTab = tab
+        }
+
         engine.sync()
         engineRunning = engine.isRunning
         keyboardAvailable = engine.keyboardTapAvailable
@@ -254,7 +267,9 @@ final class AppModel: ObservableObject {
         let granted = Permissions.hasAccessibility
         if granted != hasAccessibility { hasAccessibility = granted }
 
-        if granted && !engine.isRunning && store.settings.engineEnabled {
+        // 判据是 needsEventTap：鼠标控制（滚轮/侧键动作）也靠这只 tap，
+        // 用户只开平滑滚轮、不开手势时同样要在授权后把 tap 挂上。
+        if granted && !engine.isRunning && store.settings.needsEventTap {
             engine.sync()
         }
 

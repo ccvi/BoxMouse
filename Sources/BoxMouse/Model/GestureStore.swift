@@ -47,6 +47,30 @@ struct BoxMouseSettings: Codable, Equatable {
     /// 画了手势但没匹配上任何一条时，提示「未识别手势」
     var showUnrecognizedFeedback: Bool = true
 
+    // MARK: - 鼠标控制
+
+    /// 鼠标增强总开关。
+    ///
+    /// 默认关：升级上来的用户不该一睁眼发现滚轮手感变了、侧键不画手势了。
+    /// 想用的人自己去「鼠标」页打开，页面会明确写出当前状态。
+    var mouseControlEnabled: Bool = false
+    /// 平滑滚轮：把鼠标滚轮的「行滚动」转成带缓动的像素滚动。
+    /// 触控板/妙控鼠标自带平滑与惯性，不走这条（否则会双重平滑）。
+    var smoothScrollEnabled: Bool = false
+    /// 平滑滚轮的力度倍率。1.0 = 标准，越大滚得越远。
+    var smoothScrollStrength: Double = 1.0
+    /// 滚轮反方向：垂直和水平都翻。
+    var invertScrollEnabled: Bool = false
+    /// 侧键（Forward / Back）按下时要执行的动作。
+    ///
+    /// **没有单独的模式开关**：配了动作就是「按下即执行」，没配就是老行为
+    /// （按住侧键画轨迹）。理由很直接——三选一的模式让用户可以配出一堆
+    /// 「选了动作但两个键都没设东西」的空状态，界面上还得多解释一遍谁覆盖谁。
+    /// 现在一颗键一个开关，开关本身就是它自己的模式。
+    var forwardButtonAction: GestureAction?
+    /// Back 按键要执行的动作
+    var backButtonAction: GestureAction?
+
     init() {}
 
     private enum CodingKeys: String, CodingKey {
@@ -54,6 +78,9 @@ struct BoxMouseSettings: Codable, Equatable {
         case trailColorHex, trailWidth, showTrail, skipOwnWindow
         case multiTouchEnabled, hideDockIcon
         case showSuccessFeedback, showUnrecognizedFeedback
+        case smoothScrollEnabled, smoothScrollStrength, invertScrollEnabled
+        case forwardButtonAction, backButtonAction
+        case mouseControlEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -73,7 +100,35 @@ struct BoxMouseSettings: Codable, Equatable {
             ?? fallback.showSuccessFeedback
         showUnrecognizedFeedback = try container.decodeIfPresent(Bool.self, forKey: .showUnrecognizedFeedback)
             ?? fallback.showUnrecognizedFeedback
+        mouseControlEnabled = try container.decodeIfPresent(Bool.self, forKey: .mouseControlEnabled)
+            ?? fallback.mouseControlEnabled
+        smoothScrollEnabled = try container.decodeIfPresent(Bool.self, forKey: .smoothScrollEnabled)
+            ?? fallback.smoothScrollEnabled
+        smoothScrollStrength = try container.decodeIfPresent(Double.self, forKey: .smoothScrollStrength)
+            ?? fallback.smoothScrollStrength
+        invertScrollEnabled = try container.decodeIfPresent(Bool.self, forKey: .invertScrollEnabled)
+            ?? fallback.invertScrollEnabled
+        forwardButtonAction = try container.decodeIfPresent(GestureAction.self, forKey: .forwardButtonAction)
+        backButtonAction = try container.decodeIfPresent(GestureAction.self, forKey: .backButtonAction)
     }
+}
+
+extension BoxMouseSettings {
+    /// 鼠标控制（滚轮 / 侧键动作）有没有任何一项在生效。
+    ///
+    /// 这一组功能独立于「手势引擎」总开关：用户完全可能只想用平滑滚轮，
+    /// 不想要任何手势。事件 tap 只要还有一项在生效就得挂着。
+    ///
+    /// 总开关关掉时一律视为不生效——不然用户把总开关一关，滚轮却还在被改写，
+    /// 「开关」就成了摆设。
+    var mouseControlActive: Bool {
+        guard mouseControlEnabled else { return false }
+        return smoothScrollEnabled || invertScrollEnabled
+            || forwardButtonAction != nil || backButtonAction != nil
+    }
+
+    /// 事件 tap 需不需要挂着
+    var needsEventTap: Bool { engineEnabled || mouseControlActive }
 }
 
 /// 备份文件结构

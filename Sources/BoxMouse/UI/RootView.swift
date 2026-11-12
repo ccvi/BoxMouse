@@ -99,6 +99,8 @@ struct RootView: View {
         switch model.selectedTab {
         case .gestures:
             GestureTabView(model: model)
+        case .mouse:
+            MouseTabView(model: model)
         case .general:
             GeneralView(model: model)
         case .permissions:

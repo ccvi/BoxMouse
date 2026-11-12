@@ -44,6 +44,7 @@ enum SelfTest {
         testShortcutRoundTrip()
         testShortcutMatching()
         testSettingsCompatibility()
+        testMouseControl()
         testWindowOps()
         testModifiers()
         testTrackpad()
@@ -737,6 +738,188 @@ enum SelfTest {
         }
         check(redecoded.hideDockIcon, "隐藏 Dock 图标开关能持久化")
         check(redecoded == settings, "设置往返后完全一致")
+    }
+
+    // MARK: - 鼠标控制
+
+    /// 滚轮反方向 / 侧键 / tap 判据 / 平滑滚轮的队列行为。
+    ///
+    /// 这一组是本轮新增的「鼠标控制」页，和手势引擎平级：只要任何一项在生效，
+    /// 事件 tap 就得挂着。最容易写错的地方是判据（把 engineEnabled 当成了全部），
+    /// 所以真值表逐条钉死。
+    private static func testMouseControl() {
+        // ① 反方向
+        //
+        // ⚠️ 这里钉的是**实测出来的联动关系**，不是想当然的「三套字段各翻一次」：
+        // PointDelta / FixedPtDelta / Delta 三者共享一份内部存储，写 Delta 会联动
+        // 重算另外两套（且带取整、不可逆）；触控板事件 Delta 恒为 0，写它会把
+        // 整条事件的像素位移清零。第一版就是逐个翻六个字段，结果位移翻倍
+        // （12 → 24），被断言的「翻两次回到原值」逮住。
+        let fields: [CGEventField] = [
+            .scrollWheelEventDeltaAxis1, .scrollWheelEventDeltaAxis2,
+            .scrollWheelEventPointDeltaAxis1, .scrollWheelEventPointDeltaAxis2,
+            .scrollWheelEventFixedPtDeltaAxis1, .scrollWheelEventFixedPtDeltaAxis2
+        ]
+
+        if let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                               wheelCount: 2, wheel1: 3, wheel2: -2, wheel3: 0) {
+            wheel.setIntegerValueField(.scrollWheelEventIsContinuous, value: 0)
+            let before = fields.map { wheel.getIntegerValueField($0) }
+            check(before[2] != 0 && before[4] != 0,
+                  "离散滚轮事件带像素位移与定点位移（\(before)）")
+
+            GestureEngine.flipScrollFields(wheel)
+            let after = fields.map { wheel.getIntegerValueField($0) }
+            check(after[2] == -before[2] && after[3] == -before[3],
+                  "反方向：像素位移精确取反（\(before[2]) → \(after[2])）")
+            check(after[4] == -before[4] && after[5] == -before[5],
+                  "反方向：定点位移跟着取反，两套保持一致（\(before[4]) → \(after[4])）")
+            check(after[0] == before[0] && after[1] == before[1],
+                  "反方向不碰行位移 Delta（写它会联动重算另外两套，位移会缩水）")
+            check(wheel.getIntegerValueField(.scrollWheelEventIsContinuous) == 0,
+                  "反方向不碰 IsContinuous（否则触控板会被误判成鼠标，惯性被切断）")
+
+            GestureEngine.flipScrollFields(wheel)
+            check(fields.map { wheel.getIntegerValueField($0) } == before,
+                  "连续反方向两次逐字段回到原始位移（开关来回拨没有累积误差）")
+        } else {
+            check(false, "能创建滚轮事件用于反方向测试")
+        }
+
+        // 触控板式事件：Delta 恒为 0、只有像素位移。这里翻错字段就等于把滚动清零。
+        if let pad = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                             wheelCount: 2, wheel1: 7, wheel2: 0, wheel3: 0) {
+            pad.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            // ⚠️ 顺序有讲究：写 Delta 会联动重算 Point/Fixed，所以先把 Delta 归零，
+            // 再铺像素位移——反过来写会把刚铺好的位移清掉（这本身也是那条
+            // 「别碰 Delta」结论的来源）。
+            pad.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
+            pad.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: 0)
+            pad.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 7)
+            pad.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 7 << 16)
+            check(pad.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == 7,
+                  "触控板式事件已铺成「行位移 0、像素位移 7」")
+
+            GestureEngine.flipScrollFields(pad)
+            check(pad.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == -7,
+                  "触控板事件反方向后像素位移仍然存在且反向（没有被清零）")
+            check(pad.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1) == -(7 << 16),
+                  "触控板事件反方向后定点位移同向翻转")
+
+            GestureEngine.flipScrollFields(pad)
+            check(pad.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == 7
+                  && pad.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1) == 7 << 16,
+                  "触控板事件连续反方向两次回到原值")
+        } else {
+            check(false, "能创建触控板式滚轮事件")
+        }
+
+        // 老式「只有行数」的事件：像素位移为 0，只能靠 Delta 翻
+        if let line = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                              wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0) {
+            line.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 0)
+            line.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 0)
+            GestureEngine.flipScrollFields(line)
+            check(line.getIntegerValueField(.scrollWheelEventDeltaAxis1) == -3,
+                  "纯行滚动事件退回翻 Delta（\(line.getIntegerValueField(.scrollWheelEventDeltaAxis1))）")
+        } else {
+            check(false, "能创建纯行滚动事件")
+        }
+
+        // ② 该不该挂事件 tap
+        var settings = BoxMouseSettings()
+        settings.engineEnabled = false
+        settings.mouseControlEnabled = false
+        settings.smoothScrollEnabled = true
+        check(!settings.mouseControlActive,
+              "总开关关着时，子项开着也不算生效（开关不能是摆设）")
+        check(!settings.needsEventTap,
+              "总开关关着且手势引擎关着 → 不挂 tap")
+
+        settings.mouseControlEnabled = true
+        check(settings.mouseControlActive && settings.needsEventTap,
+              "只开平滑滚轮、关掉手势引擎也要挂 tap（否则滚轮增强静默失效）")
+
+        settings.smoothScrollEnabled = false
+        check(!settings.mouseControlActive && !settings.needsEventTap,
+              "总开关开着但一项都没启用 → 不挂 tap，不做无意义的监听")
+
+        // 侧键没有独立模式开关：配了动作就是「按下即执行」，没配就是老行为。
+        // 判据因此直接看两颗键有没有动作。
+        settings.forwardButtonAction = GestureAction(kind: .browser, browserOp: .forward)
+        check(settings.mouseControlActive && settings.needsEventTap,
+              "只给侧键配了一个动作也算鼠标控制在生效（要挂 tap 才拦得到侧键）")
+
+        settings.forwardButtonAction = nil
+        check(!settings.mouseControlActive, "两颗侧键都没动作 → 不算生效（继续按住画轨迹）")
+
+        settings.backButtonAction = GestureAction(kind: .window, windowOp: .leftHalf)
+        check(settings.mouseControlActive, "只给 Back 配动作也算")
+
+        settings.backButtonAction = nil
+        settings.invertScrollEnabled = true
+        check(settings.mouseControlActive, "只开滚轮反方向也算")
+
+        settings.invertScrollEnabled = false
+        settings.mouseControlEnabled = false
+        settings.engineEnabled = true
+        check(settings.needsEventTap && !settings.mouseControlActive,
+              "手势引擎照旧独立决定 tap，不受鼠标控制总开关影响")
+
+        // ③ 老配置回落：升级上来的 settings.json 里没有任何鼠标控制的键
+        let legacy = """
+        {
+          "engineEnabled": true,
+          "minPathLength": 18
+        }
+        """
+        guard let decoded = try? JSONDecoder().decode(BoxMouseSettings.self,
+                                                      from: Data(legacy.utf8)) else {
+            check(false, "缺鼠标控制字段的旧设置仍可解码")
+            return
+        }
+        check(decoded.mouseControlEnabled == false,
+              "旧配置默认不开鼠标控制（升级不该悄悄改掉滚轮手感）")
+        check(decoded.forwardButtonAction == nil && decoded.backButtonAction == nil,
+              "旧配置里两颗侧键都没有动作（继续按住画轨迹，不废掉已有侧键手势）")
+        check(decoded.smoothScrollStrength == 1.0,
+              "旧配置滚动距离回落成 1.0×")
+        check(decoded.needsEventTap, "旧配置里 engineEnabled=true 照样挂 tap")
+
+        // ④ 新字段能写进文件、读回来一致
+        var round = decoded
+        round.mouseControlEnabled = true
+        round.smoothScrollEnabled = true
+        round.smoothScrollStrength = 1.6
+        round.invertScrollEnabled = true
+        round.forwardButtonAction = GestureAction(kind: .browser, browserOp: .forward)
+        round.backButtonAction = GestureAction(kind: .window, windowOp: .leftHalf)
+        guard let data = try? JSONEncoder().encode(round),
+              let back = try? JSONDecoder().decode(BoxMouseSettings.self, from: data) else {
+            check(false, "鼠标控制设置编码后可再次解码")
+            return
+        }
+        check(back == round, "鼠标控制设置往返后完全一致")
+        check(back.forwardButtonAction?.browserOp == .forward,
+              "Forward Button 的动作存下来了（\(back.forwardButtonAction?.browserOp?.rawValue ?? "nil")）")
+        check(back.backButtonAction?.windowOp == .leftHalf,
+              "Back Button 的动作存下来了（\(back.backButtonAction?.windowOp?.rawValue ?? "nil")）")
+        check(back.smoothScrollStrength == 1.6, "滚动距离倍率存下来了")
+
+        // ⑤ 平滑滚轮的待滚队列
+        //
+        // 只验证状态机（进/出忙态、清空），真派发要跑 run loop。
+        // ⚠️ feed 之后可能派出一两帧真实滚动事件（<40px），reset 立刻停住。
+        let scroller = SmoothScroller()
+        check(scroller.isIdle, "平滑滚轮初始空闲")
+        scroller.feed(pixelsX: 0, pixelsY: 0)
+        check(scroller.isIdle, "喂 0 位移不启动派发（否则会空转出一串 0 像素事件）")
+        scroller.feed(pixelsX: 12, pixelsY: -40)
+        check(!scroller.isIdle, "喂了真实位移之后进入派发状态")
+        scroller.reset()
+        check(scroller.isIdle, "reset 之后立刻回空闲（关开关时不能残留余量继续滚）")
+        check(SmoothScroller.baseLineHeight > 0,
+              "一档滚轮折算的像素高度为正（\(SmoothScroller.baseLineHeight)）")
     }
 
     private static func testWindowOps() {

@@ -51,6 +51,11 @@ final class GestureEngine {
     /// 并且要能让界面说清"快捷键为什么不灵"。
     private(set) var keyboardTapAvailable = true
 
+    /// 平滑滚轮：把离散滚轮的行滚动摊成逐帧像素滚动
+    private let scroller = SmoothScroller()
+    /// 按下被当成「执行动作」吞掉的侧键编号，等对应的 up 到来时也要吞掉
+    private var swallowedSideButtons: Set<Int64> = []
+
     /// 一轮手势的结局。鼠标手势和触摸板手势走同一套，界面据此弹提示。
     enum FireOutcome: Equatable {
         /// 认出来了，动作也发出去了
@@ -72,7 +77,9 @@ final class GestureEngine {
     // MARK: - 生命周期
 
     func sync() {
-        if store.settings.engineEnabled && Permissions.hasAccessibility {
+        // 判据是 needsEventTap 而不是 engineEnabled：平滑滚轮、反方向、侧键动作
+        // 都是独立于「手势引擎」总开关的，用户完全可以关掉手势只用滚轮增强。
+        if store.settings.needsEventTap && Permissions.hasAccessibility {
             start()
         } else {
             stop()
@@ -92,6 +99,9 @@ final class GestureEngine {
         var types: [CGEventType] = [
             .rightMouseDown, .rightMouseDragged, .rightMouseUp,
             .otherMouseDown, .otherMouseDragged, .otherMouseUp,
+            // 滚轮：平滑滚轮和反方向都要拦。触控板滚动量很大，但回调里
+            // 只是读几个整数、两个开关都没开就立刻放行，开销可以忽略。
+            .scrollWheel,
             // 快捷键条目要匹配全局按键。键盘事件量远小于 pointer 移动，
             // 而且先查"有没有配快捷键"，没有就直接放行，不会给打字增加延迟。
             .keyDown
@@ -146,6 +156,10 @@ final class GestureEngine {
         tap = nil
         runLoopSource = nil
         isRunning = false
+        // 停表时滚轮还有没摊完的余量，必须清掉：不然用户关掉开关之后
+        // 屏幕还会自己再滚一小段，看起来像"开关没生效"。
+        scroller.reset()
+        swallowedSideButtons.removeAll()
         cancel()
     }
 
@@ -168,6 +182,24 @@ final class GestureEngine {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return passthrough
+        }
+
+        // 滚轮和侧键动作有各自的开关，**不受「手势引擎」总开关管**：
+        // 用户可能只想用平滑滚轮、不想让任何手势生效。
+        if type == .scrollWheel {
+            return handleScroll(event) ? nil : passthrough
+        }
+        if type == .otherMouseDown {
+            let number = event.getIntegerValueField(.mouseEventButtonNumber)
+            if (number == 3 || number == 4), handleSideButtonAction(number: number, event: event) {
+                return nil
+            }
+        }
+        if type == .otherMouseUp {
+            // 按下被我们执行成动作了，松开也必须吞掉：否则应用收到一个
+            // 没有 down 的 up，某些应用会把它当独立点击处理。
+            let number = event.getIntegerValueField(.mouseEventButtonNumber)
+            if swallowedSideButtons.remove(number) != nil { return nil }
         }
 
         guard store.settings.engineEnabled else { return passthrough }
@@ -238,6 +270,118 @@ final class GestureEngine {
         let didRun = ActionRunner.shared.perform(gesture.action, context: context)
         onResult?(didRun ? .matched(gesture) : .failed(gesture))
         return true
+    }
+
+    // MARK: - 滚轮
+
+    /// 滚轮事件：只做两件事——反方向、把离散滚轮摊成像素滚动。
+    ///
+    /// 返回 true 表示"这条事件归我们了"，调用方吞掉它。
+    ///
+    /// 🔴 触控板 / 妙控鼠标（`IsContinuous = 1`）**不做平滑**：系统已经给过
+    /// 平滑和惯性，再来一遍就是双重缓动，手感会发飘。它们只处理反方向。
+    private func handleScroll(_ event: CGEvent) -> Bool {
+        guard store.settings.mouseControlEnabled else { return false }
+        let smooth = store.settings.smoothScrollEnabled
+        let invert = store.settings.invertScrollEnabled
+        guard smooth || invert else { return false }
+
+        let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
+
+        if isContinuous || !smooth {
+            guard invert else { return false }
+            // 原地翻转后放行：保留 phase / momentumPhase，触控板的惯性不会被切断
+            Self.flipScrollFields(event)
+            return false
+        }
+
+        // 离散滚轮 + 开了平滑
+        var dx = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
+        var dy = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+        if dx == 0, dy == 0 {
+            // 有的鼠标只给行数，换算成像素
+            dx = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis2)) * SmoothScroller.baseLineHeight
+            dy = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * SmoothScroller.baseLineHeight
+        }
+        if invert { dx = -dx; dy = -dy }
+        guard dx != 0 || dy != 0 else { return false }
+
+        let strength = min(3.0, max(0.2, store.settings.smoothScrollStrength))
+        scroller.feed(pixelsX: dx * strength, pixelsY: dy * strength)
+        return true
+    }
+
+    /// 把一条滚轮事件的位移方向翻过来。
+    ///
+    /// 🔴 这里有三个 delta 视图：`PointDelta`（像素）、`FixedPtDelta`（16.16 定点）
+    /// 和 `Delta`（行）。**它们不是独立的**，实测（见自检）：
+    ///
+    /// - 写 `Delta` 会**联动重算** `PointDelta` 和 `FixedPtDelta`，而且换算带取整，
+    ///   30 → 翻一次变 -24，再翻一次是 24 —— 不可逆，来回拨两次位移就缩水。
+    ///   更糟的是触控板事件的 `Delta` 恒为 0，写它会把整条事件的像素位移
+    ///   **清零**，反方向一开就等于滚不动。
+    /// - 写 `PointDelta` / `FixedPtDelta` 只改自己，精确、可逆、互不牵连。
+    ///
+    /// 所以主路径只翻后两套；只有遇到「纯行滚动」的老式事件（像素位移为 0、
+    /// 行位移非 0）才退回翻 `Delta`——那时 Pixel 本来就是 0，联动不会破坏什么。
+    static func flipScrollFields(_ event: CGEvent) {
+        let pointX = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+        let pointY = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+
+        if pointX != 0 || pointY != 0 {
+            if pointY != 0 {
+                event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: -pointY)
+            }
+            if pointX != 0 {
+                event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: -pointX)
+            }
+            let fixedY = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1)
+            let fixedX = event.getIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2)
+            if fixedY != 0 {
+                event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -fixedY)
+            }
+            if fixedX != 0 {
+                event.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2, value: -fixedX)
+            }
+            return
+        }
+
+        let lineY = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let lineX = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        if lineY != 0 {
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: -lineY)
+        }
+        if lineX != 0 {
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: -lineX)
+        }
+    }
+
+    // MARK: - 侧键
+
+    /// 侧键（Forward / Back）按下即执行动作——**前提是这颗键配了动作**。
+    ///
+    /// 没配就返回 false，事件继续往下走老路径（按住侧键画轨迹），
+    /// 所以不需要额外的「模式」开关：一颗键的行为由它自己有没有动作决定。
+    ///
+    /// buttonNumber 约定：**3 = Back、4 = Forward**，和浏览器、Edge / Chrome
+    /// 的内置映射一致。个别鼠标厂商会反过来，真遇到再给「交换」开关。
+    private func handleSideButtonAction(number: Int64, event: CGEvent) -> Bool {
+        guard store.settings.mouseControlEnabled else { return false }
+        let action = number == 4 ? store.settings.forwardButtonAction
+                                 : store.settings.backButtonAction
+        guard let action else { return false }
+
+        let context = TargetResolver.resolve(mode: store.settings.targetMode,
+                                             point: event.location,
+                                             lockWindow: store.settings.lockWindow)
+        let didRun = ActionRunner.shared.perform(action, context: context)
+        // 侧键是"按了没反应最难查"的一类：面板上一切正常，实际可能连事件都没收到。
+        // 留一行痕（trace 是 60 行环，不长大），出问题时能一眼看出走到了哪一步。
+        TrackpadEngine.trace("侧键 \(number) → \(action.kind.displayName)"
+                             + "，目标 \(context.bundleID ?? "nil")，"
+                             + (didRun ? "执行成功" : "执行失败"))
+        if didRun { swallowedSideButtons.insert(number) }
+        return didRun
     }
 
     // MARK: - 起手 / 采集 / 收尾
@@ -350,7 +494,10 @@ final class GestureEngine {
     /// 重放事件的标记值（"BM" = BoxMouse）。
     /// 写进 eventSourceUserData，tap 回调里见到它就知道是自己重放的，直接放行。
     /// 没有这个标记，重放事件会再进一次自己的 tap，短点击就变成死循环。
-    static let replayMark: Int64 = 0x424D
+    ///
+    /// `nonisolated`：平滑滚轮的派发在后台队列上（SmoothScroller），
+    /// 那里读不到 MainActor 隔离的静态属性。
+    nonisolated static let replayMark: Int64 = 0x424D
 
     /// 补发被我们吞掉的那次点击
     private func replayClick(_ state: DrawState) {
