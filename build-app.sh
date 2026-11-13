@@ -3,12 +3,13 @@
 # ============================================================
 # BoxMouse 打包脚本
 #
-# 产出 dist/BoxMouse.app —— 可双击、可拖进 /Applications 的原生应用。
+# 产出 dist/BoxMouse.app + dist/BoxMouse-<版本>.dmg。
 #
 # 用法：
-#   ./build-app.sh                发布构建（release，带图标，ad-hoc 签名）
+#   ./build-app.sh                发布构建（release，带图标，出 dmg）
 #   ./build-app.sh --debug        调试构建
 #   ./build-app.sh --no-sign      跳过签名
+#   ./build-app.sh --no-dmg       只出 .app，不打 dmg（临时排查用，交付别用）
 #   ./build-app.sh --clean        先清 .build 再构建
 #   ./build-app.sh --identity X   用 X 这个代码签名身份签名，代替 ad-hoc
 #
@@ -33,6 +34,7 @@ CONFIGURATION="release"
 DO_SIGN=1
 SIGN_IDENTITY="-"   # 默认 ad-hoc；--identity 换成固定证书，让 TCC 授权能跨构建保留
 DO_INSTALL=0
+DO_DMG=1        # 默认出 dmg。dmg 是唯一对外交付的安装包格式，别再产 zip/pkg
 FORCE_BUMP=0
 SKIP_BUMP=0
 DO_CLEAN=0
@@ -54,10 +56,11 @@ for ((i = 1; i <= $#; i++)); do
         --clean)      DO_CLEAN=1 ;;
         --no-sandbox) SWIFT_FLAGS+=(--disable-sandbox) ;;
         --install)    DO_INSTALL=1 ;;
+        --no-dmg)     DO_DMG=0 ;;
         --bump)       FORCE_BUMP=1 ;;
         --no-bump)    SKIP_BUMP=1 ;;
         -h|--help)
-            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -315,17 +318,38 @@ else
 fi
 
 # ------------------------------------------------------------
-# 6. 版本号落盘（放在所有可能失败的步骤之后）
+# 7. dmg 安装包
+#
+# 🔴 顺序不能反：**先签名，再打 dmg**。反过来的话要挂载 dmg 去重签里面的 app，
+# 而重签会改 cdhash —— 「辅助功能」授权立刻失效，用户装完就是"手势又没反应"。
+# 这里只做一次 ditto 进暂存目录 + hdiutil，不改签名封存。
+#
+# dmg 是唯一对外交付的安装包格式（不产 zip / pkg）。--no-dmg 只给排查用。
+# ------------------------------------------------------------
+if [[ "$DO_DMG" == "1" ]]; then
+    echo ""
+    echo "▶ 打 dmg 安装包…"
+    "$PROJECT_ROOT/tools/make-dmg.sh" | sed 's/^/  /'
+else
+    echo ""
+    echo "▶ 已跳过 dmg（--no-dmg）"
+fi
+
+# ------------------------------------------------------------
+# 8. 版本号落盘（放在所有可能失败的步骤之后）
 # ------------------------------------------------------------
 printf '%s\n' "$APP_VERSION" > "$VERSION_FILE"
 printf '%s\n' "$CURRENT_FINGERPRINT" > "$FINGERPRINT_FILE"
 
 # ------------------------------------------------------------
-# 7. 完成
+# 9. 完成
 # ------------------------------------------------------------
 echo ""
 echo "────────────────────────────────────────────────────"
 echo "打包完成：${APP_DIR}"
+if [[ "$DO_DMG" == "1" ]]; then
+    echo "安装包：${DIST_DIR}/${APP_NAME}-${APP_VERSION}.dmg"
+fi
 echo "版本号：${APP_VERSION}（构建号 ${APP_BUILD_NUMBER}）"
 echo ""
 du -sh "$APP_DIR" | sed 's/^/  体积 /'

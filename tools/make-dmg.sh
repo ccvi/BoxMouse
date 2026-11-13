@@ -2,12 +2,14 @@
 #
 # 把 dist/<App>.app 打成可分发的 dmg
 #
-#   ./tools/make-dmg.sh                     # 用 VERSION 当卷标和文件名
-#   ./tools/make-dmg.sh --no-verify         # 跳过签名校验（只在排查时用）
+#   ./build-app.sh          # 正常打包会**自动**调用本脚本（--no-dmg 可跳过）
+#   ./tools/make-dmg.sh     # 只重打 dmg，不重新构建（改完图标/壳子时用）
+#   ./tools/make-dmg.sh --no-verify  # 跳过签名校验（只在排查时用）
 #
-# 为什么单独一个脚本，不塞进 build-app.sh：
-#   dmg 只用于「对外发版」（GitHub Releases），日常装机只要 dist/*.app。
-#   塞进主脚本会让每次构建都多花几秒去压缩一个没人要的文件。
+# 为什么是独立脚本而不是内联在 build-app.sh 里：
+#   单独跑一次不用等 30 秒的 swift build，改 dmg 的外观（卷标、布局）时很方便。
+#   但**默认一定要出**：dmg 是唯一对外交付的安装包格式，build-app.sh 在
+#   「签名之后、安装之前」调用它，顺序反了就得挂载重签，TCC 授权会跟着失效。
 #
 # 产物：dist/BoxMouse-<版本>.dmg
 #
@@ -80,6 +82,35 @@ if ! hdiutil verify "$OUT_PATH" >/dev/null 2>&1; then
     exit 1
 fi
 echo "  ✓ dmg 校验通过"
+
+# ---------- 挂起来验货 ----------
+# 只校验 dmg 文件本身不够：要确认「dmg 里那个 app」跟刚才验证过的 dist 是同一份。
+# cdhash 不一致 = 用户装上的东西跟我们测过的不是一份，TCC 授权也会对不上。
+if [[ "$VERIFY" == "1" ]]; then
+    MOUNT_POINT="$(mktemp -d)"
+    # 用 -nobrowse 免得在 Finder 里弹出窗口；-readonly 防止误写
+    hdiutil attach "$OUT_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT" >/dev/null
+    # shellcheck disable=SC2064
+    trap "hdiutil detach '$MOUNT_POINT' >/dev/null 2>&1 || true; rm -rf '$MOUNT_POINT' '$STAGE'" EXIT
+
+    DIST_CDHASH="$(codesign -dvvv "$APP_PATH" 2>&1 | awk -F= '/^CDHash=/ {print $2; exit}')"
+    DMG_CDHASH="$(codesign -dvvv "$MOUNT_POINT/${APP_NAME}.app" 2>&1 | awk -F= '/^CDHash=/ {print $2; exit}')"
+    if [[ -z "$DIST_CDHASH" || "$DIST_CDHASH" != "$DMG_CDHASH" ]]; then
+        echo "  ✗ dmg 里的 app 与 dist 不是同一份签名" >&2
+        echo "    dist=${DIST_CDHASH:-?} / dmg=${DMG_CDHASH:-?}" >&2
+        exit 1
+    fi
+    echo "  ✓ dmg 内 app 的 cdhash 与 dist 一致（${DMG_CDHASH}）"
+
+    if [[ ! -L "$MOUNT_POINT/Applications" ]]; then
+        echo "  ✗ dmg 里缺少指向 /Applications 的软链，拖拽安装的样式不对" >&2
+        exit 1
+    fi
+    echo "  ✓ 拖拽安装样式完整（BoxMouse.app + Applications 软链）"
+
+    hdiutil detach "$MOUNT_POINT" >/dev/null
+    rmdir "$MOUNT_POINT" 2>/dev/null || true
+fi
 
 SIZE="$(du -h "$OUT_PATH" | awk '{print $1}')"
 echo

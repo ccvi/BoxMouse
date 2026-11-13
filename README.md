@@ -282,18 +282,24 @@ BoxMouse/
 
 ## 发版（dmg + GitHub Releases）
 
-对外发版才做这一步，日常装机只要 `dist/BoxMouse.app`。
+`./build-app.sh` **默认就出 dmg**，不需要再手动跑一步：
 
 ```bash
-./build-app.sh --no-sandbox --identity "FastFind Local Signing"   # 先出包（会跑自检门禁）
-./tools/make-dmg.sh                                               # → dist/BoxMouse-<版本>.dmg
+./build-app.sh --no-sandbox --identity "FastFind Local Signing"   # → dist/BoxMouse.app + dist/BoxMouse-<版本>.dmg
 gh release create v<版本> dist/BoxMouse-<版本>.dmg \
     --title "BoxMouse <版本>" --notes-file notes.md --target main
 ```
 
-`make-dmg.sh` 做三件事：校验签名与包内版本号一致（防止把上一版的壳当新版发出去）、
-用 `ditto` 把 app 和 `Applications` 软链组装成拖拽安装样式、打完 `hdiutil verify` 验一遍。
-
+- 🔴 **dmg 是唯一对外交付的安装包格式**，不再产 zip / pkg / tar.gz；
+  `dist/` 里只该有 `BoxMouse.app` 和 `BoxMouse-<版本>.dmg`。
+- `--no-dmg` 只给临时排查用（比如只想看 .app 的界面），正常交付别用它。
+- dmg 那一步交给 `tools/make-dmg.sh`（签名之后、安装之前调用）。单独跑它可以在
+  不重新 `swift build` 的情况下重打一次 dmg，改卷标/布局时方便。
+- `make-dmg.sh` 做四件事：校验签名与包内版本号一致（防止把上一版的壳当新版发出去）、
+  用 `ditto` 把 app 和 `Applications` 软链组装成拖拽安装样式、`hdiutil verify` 验一遍、
+  **挂起来比对 dmg 内 app 与 dist 的 cdhash**——不一致说明用户装上的东西不是我们测过的那一份。
+- 🔴 **顺序不能反：先签名、再打 dmg、最后安装**。反过来就得挂载 dmg 重签里面的 app，
+  而重签会改 cdhash，「辅助功能 / 输入监控」授权立刻失效。
 - 🔴 **`dist/` 在 `.gitignore` 里**，dmg 不进版本库，只走 Releases 附件。
 - 本机证书是自签名（不是 Apple Developer ID），别人下载后首次打开会被 Gatekeeper 拦，
   需要右键 → 打开，或「系统设置 → 隐私与安全性 → 仍要打开」。脚本会把这个提示打出来。
