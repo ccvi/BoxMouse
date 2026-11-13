@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoxMouse 使用帮助</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1d1d1f;
+    --fg2: #6b6b70;
+    --bg: #ffffff;
+    --card: #f6f6f8;
+    --line: #e3e3e8;
+    --accent: #0a66ff;
+    --warn-bg: #fff7e6;
+    --warn-line: #ffd591;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #ececf0;
+      --fg2: #9a9aa2;
+      --bg: #1c1c1e;
+      --card: #262629;
+      --line: #35353a;
+      --accent: #4d94ff;
+      --warn-bg: #33260f;
+      --warn-line: #6b4a15;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 34px 30px 60px;
+    max-width: 720px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.75 -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 25px; margin: 0 0 6px; letter-spacing: -0.2px; }
+  .sub { color: var(--fg2); margin: 0 0 26px; font-size: 13px; }
+  h2 {
+    font-size: 16px; margin: 34px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--line);
+  }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  h3 { font-size: 13.5px; margin: 18px 0 6px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  code, kbd {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 12.5px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  kbd { font-size: 11.5px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 12px 0;
+  }
+  .warn {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-line);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin: 12px 0;
+  }
+  .warn b { color: #b26a00; }
+  @media (prefers-color-scheme: dark) { .warn b { color: #ffb74d; } }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--fg2); font-weight: 500; }
+  .kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--fg2); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .foot { margin-top: 40px; color: var(--fg2); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>BoxMouse 使用帮助</h1>
+<p class="sub">本地运行的鼠标手势自动化工具 · 所有配置都在本机，不上传任何数据</p>
+
+<h2>三分钟上手</h2>
+
+<h3>1. 给两个权限</h3>
+<p>打开「系统设置 → 隐私与安全性」，勾选两项：</p>
+<div class="card">
+  <div class="kv">
+    <span>辅助功能</span><span>读鼠标事件、发合成按键、操作窗口。<b>没有它，鼠标手势一条都不触发。</b></span>
+    <span>输入监控</span><span>只用触摸板手势时才需要。</span>
+  </div>
+</div>
+<p>勾完建议重启一次应用。授权是跟着签名走的，用固定证书打包的版本升级后不会掉。</p>
+
+<h3>2. 从菜单栏进来</h3>
+<p>BoxMouse 是一个<b>菜单栏常驻</b>的应用：关掉窗口它不退出，引擎要在后台继续监听。</p>
+<ul>
+  <li>点菜单栏图标 → 浮窗里有总开关、状态、手势计数和一键回主窗口。</li>
+  <li>也可以在「设置 → 通用」里关掉 Dock 图标，变成纯菜单栏形态。</li>
+  <li>要真正退出：<kbd>⌘Q</kbd> 或菜单里的「退出」。</li>
+</ul>
+
+<h3>3. 画一条手势试试</h3>
+<ol>
+  <li>「手势」页 → 右上角「添加」。</li>
+  <li>在轨迹框里按住右键画一笔（比如一个 ⌐）。</li>
+  <li>给它配一个动作：快捷键、打开应用、窗口操作、浏览器操作都行。</li>
+  <li>保存后回到任意窗口，按住右键画同样的形状。</li>
+</ol>
+<p>画歪了或者没触发，去「手势测试」页：手动画一笔就能看到与每条手势的相似度，不用到系统里试错。</p>
+
+<h2>鼠标手势</h2>
+<ul>
+  <li><b>触发键</b>：默认按住右键画轨迹；也可以设置成中键、左键+修饰键等。</li>
+  <li><b>修饰键</b>：同一条轨迹配上 <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>fn</kbd> 就是另一条手势，互不冲突。</li>
+  <li><b>作用域</b>：每条手势可以只对某个应用、某个应用组生效，或者全局生效。按前台应用或指针所在应用判定。</li>
+  <li><b>轨迹识别</b>：对缩放、平移、方向敏感，但短轴有死区——竖线不会被掰弯，斜线不会被压平。</li>
+</ul>
+
+<h2>鼠标控制（滚轮 / 附加按键）</h2>
+<p>「鼠标」页，<b>和手势引擎平级、互不隶属</b>：你可能只想用平滑滚轮，一条手势都不想要。</p>
+
+<h3>平滑滚动</h3>
+<p>把鼠标滚轮的一格摊成逐帧的亚像素滚动，带缓动收尾。三个参数：</p>
+<table>
+  <tr><th>参数</th><th>范围</th><th>怎么调</th></tr>
+  <tr><td>滚动距离</td><td>0.5 – 2.0×</td><td>觉得"一格滚太近"就往上加</td></tr>
+  <tr><td>缓动时长</td><td>100 – 500ms</td><td>越长越"滑"，太长会发飘</td></tr>
+  <tr><td>速度增益</td><td>1.0 – 3.0×</td><td>连续滚动时越滚越快；单格不加速</td></tr>
+</table>
+
+<h3>加速键</h3>
+<p>按住选定的修饰键（默认提供 <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>fn</kbd>）再滚动，距离直接 ×2，适合长页面。触控板同样生效。</p>
+
+<h3>滚轮反方向</h3>
+<div class="warn">
+  <b>只影响鼠标滚轮。</b>触控板 / 妙控鼠标的方向归系统「自然滚动」管，这里不碰——否则一开这个开关，触控板整个方向就反了。
+</div>
+
+<h3>附加按键</h3>
+<p>鼠标侧键（Forward / Back）各配一个动作，按下即执行。<b>没配动作的侧键保持原样</b>，仍然可以按住它画轨迹——不需要额外选什么"模式"。</p>
+
+<h2>触摸板手势</h2>
+<ul>
+  <li>支持三指上/下/左/右滑、两指捏合/张开、单指轻点。</li>
+  <li><b>起手 200ms 内有宽限</b>：手指是分先后落板的，第一帧常常只报一根，不会因为"手指数变了"就作废。</li>
+  <li>单指在板上只算移动指针，<b>不会</b>被误判成滑动。</li>
+</ul>
+
+<h2>常见问题</h2>
+
+<h3>手势完全没反应</h3>
+<ol>
+  <li>看菜单栏图标的状态：是「正在监听」还是「引擎已关闭」。</li>
+  <li>「权限」页确认「辅助功能」是开的；改过权限要重启应用。</li>
+  <li>确认画的是手势的触发键，并且当前应用在它的作用域里。</li>
+  <li>去「手势测试」页手动画一笔，看相似度——能识别就是触发条件的问题。</li>
+</ol>
+
+<h3>触控板方向反了</h3>
+<p>去「系统设置 → 触控板 → 自然滚动」检查，这是系统级的。BoxMouse 的反方向开关<b>不会</b>改触控板。</p>
+
+<h3>滚轮滚起来不顺手</h3>
+<p>先把「缓动时长」调到 200~300ms、「速度增益」给 1.0~1.5，再从「滚动距离」微调。参数改动立刻生效，不用重启。</p>
+
+<h3>升级后权限又失效了</h3>
+<p>正常不会。授权绑定的是代码签名，用固定证书打包的版本升级后会保留；如果你是从别处下载的、用 ad-hoc 签名的包，每次升级 cdhash 都会变，就得重新勾一次。装的时候要用 <code>ditto</code> 复制，不要重新签名。</p>
+
+<h3>配置存在哪</h3>
+<div class="card">
+  <div class="kv">
+    <span>设置</span><span><code>~/Library/Application Support/BoxMouse/settings.json</code></span>
+    <span>手势</span><span><code>~/Library/Application Support/BoxMouse/gestures.json</code></span>
+    <span>诊断日志</span><span><code>~/Library/Application Support/BoxMouse/trackpad-trace.log</code></span>
+  </div>
+</div>
+<p>改这两个 json 之前<b>先把应用退掉</b>，否则它退出时会把内存里的值写回去，覆盖你的修改。想整体迁移就整个文件夹打包带走。</p>
+
+<h3>想看看它到底在干什么</h3>
+<p>「手势」页旁边的诊断面板会实时写日志到 <code>trackpad-trace.log</code>：每一轮触摸板手势的结论、作废原因（带具体数字，例如「作废：手指数 2→3（180ms，超出起手宽限）」）、以及滚轮每轮的输入和派发。</p>
+
+<h2>数据与隐私</h2>
+<ul>
+  <li>完全本地运行，不联网、不上传、无统计埋点。</li>
+  <li>没有任何第三方依赖。</li>
+  <li>手势配置只存在上面那个文件夹里，删掉即恢复出厂状态。</li>
+</ul>
+
+<h2>版本与作者</h2>
+<div class="card">
+  <div class="kv">
+    <span>作者</span><span>ccvi1223</span>
+    <span>邮箱</span><span><a href="mailto:ccvi1223@qq.com">ccvi1223@qq.com</a></span>
+    <span>系统要求</span><span>macOS 15 及以上，Apple M 芯片系列</span>
+  </div>
+</div>
+
+<p class="foot">这份帮助是随应用打包的本地文件，离线可看。功能和界面以你当前安装的版本为准。</p>
+
+</body>
+</html>

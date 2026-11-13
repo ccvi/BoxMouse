@@ -45,6 +45,7 @@ enum SelfTest {
         testShortcutMatching()
         testSettingsCompatibility()
         testMouseControl()
+        testHelpDocument()
         testWindowOps()
         testModifiers()
         testTrackpad()
@@ -1007,6 +1008,37 @@ enum SelfTest {
               "reset 之后立刻回空闲（关开关时不能残留余量继续滚）")
         check(SmoothScroller.baseLineHeight > 0,
               "一档滚轮折算的像素高度为正（\(SmoothScroller.baseLineHeight)）")
+    }
+
+    /// 关于页的帮助文档。
+    ///
+    /// 这条链最容易断在两个地方：① 打包脚本忘了把 `Resources/Help` 拷进 app，
+    /// ② 文件改名/挪目录。两种情况下界面都只是"点开一片空白"，很难从截图看出来，
+    /// 所以把路径解析和关键小节一起钉死。
+    private static func testHelpDocument() {
+        check(!HelpDocument.fileName.isEmpty && HelpDocument.fileExtension == "html",
+              "帮助文档是 .html（\(HelpDocument.fileName).\(HelpDocument.fileExtension)）")
+        check(HelpDocument.subdirectory == "Help",
+              "打包时会拷进 Resources/Help（实际 \(HelpDocument.subdirectory)）")
+
+        guard let url = HelpDocument.url else {
+            check(false, "能定位到帮助文档（应用包内 Resources/Help/help.html，或仓库里的源文件）")
+            return
+        }
+        check(url.path.hasSuffix("Help/help.html"),
+              "解析到的是 Help/help.html（实际 \(url.lastPathComponent)）")
+
+        let html = HelpDocument.html ?? ""
+        check(!html.isEmpty, "帮助文档不是空文件（\(html.count) 字符）")
+        for section in ["三分钟上手", "鼠标手势", "鼠标控制", "触摸板手势", "常见问题", "数据与隐私"] {
+            check(html.contains(section), "帮助文档含「\(section)」一节")
+        }
+        // 三个最容易踩的坑必须在文档里讲到，否则用户只能来问
+        check(html.contains("自然滚动"), "文档讲清了「触控板方向归系统自然滚动」")
+        check(html.contains("ditto"), "文档讲清了升级后权限不掉的前提（ditto 安装、不重签名）")
+        check(html.contains("settings.json") && html.contains("gestures.json"),
+              "文档写明了配置存放位置")
+        check(html.contains("macOS 15 及以上"), "系统要求口径与其他项目一致")
     }
 
     private static func testWindowOps() {

@@ -274,6 +274,15 @@ else
 fi
 rm -rf "$ICON_TMP"
 
+# 帮助文档：本地 HTML，随包分发，「关于」页的链接直接读它
+if [[ -d "$PROJECT_ROOT/Resources/Help" ]]; then
+    rm -rf "$RESOURCES_DIR/Help"
+    cp -R "$PROJECT_ROOT/Resources/Help" "$RESOURCES_DIR/Help"
+    echo "  ✓ Help（$(find "$RESOURCES_DIR/Help" -type f | wc -l | tr -d ' ') 个文件）"
+else
+    echo "  ⚠ 没找到 Resources/Help，「关于」页的帮助链接会失效" >&2
+fi
+
 xattr -cr "$APP_DIR" 2>/dev/null || true
 
 # ------------------------------------------------------------

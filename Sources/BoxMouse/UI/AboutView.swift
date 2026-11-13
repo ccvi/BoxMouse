@@ -10,6 +10,8 @@ import AppKit
 // ============================================================
 
 struct AboutView: View {
+    @State private var showHelp = false
+
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
     }
@@ -35,16 +37,16 @@ struct AboutView: View {
                 appIcon(scale: s)
 
                 Text("BoxMouse")
-                    .font(.system(size: 26 * s, weight: .semibold))
+                    .font(.system(size: 28 * s, weight: .semibold))
                     .padding(.top, 16 * s)
 
                 Text("版本 \(version)（构建 \(build)）")
-                    .font(.system(size: 11.5 * s))
+                    .font(.system(size: 13 * s))
                     .foregroundStyle(Theme.secondaryText)
                     .padding(.top, 4 * s)
 
                 Text("本地运行的鼠标手势自动化工具")
-                    .font(.system(size: 12.5 * s))
+                    .font(.system(size: 14 * s))
                     .foregroundStyle(Theme.secondaryText)
                     .padding(.top, 10 * s)
 
@@ -58,8 +60,27 @@ struct AboutView: View {
                 .frame(maxWidth: 460 * s)
                 .padding(.top, 26 * s)
 
+                Button {
+                    showHelp = true
+                } label: {
+                    HStack(spacing: 5 * s) {
+                        Image(systemName: "book")
+                            .font(.system(size: 12 * s, weight: .medium))
+                        Text("使用帮助")
+                            .font(.system(size: 13 * s, weight: .medium))
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+                .padding(.top, 22 * s)
+                .help("打开随包分发的本地使用帮助（离线可看）")
+
                 Text("所有手势配置保存在本机，不上传任何数据。")
-                    .font(.system(size: 10.5 * s))
+                    .font(.system(size: 12 * s))
                     .foregroundStyle(Theme.secondaryText.opacity(0.8))
                     .padding(.top, 18 * s)
 
@@ -68,6 +89,9 @@ struct AboutView: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .background(Theme.windowBackground)
+        .sheet(isPresented: $showHelp) {
+            HelpSheet()
+        }
     }
 
     private func appIcon(scale s: CGFloat) -> some View {
@@ -102,15 +126,15 @@ private struct InfoRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12 * scale) {
             Text(label)
-                .font(.system(size: 11.5 * scale))
+                .font(.system(size: 13 * scale))
                 .foregroundStyle(Theme.secondaryText)
-                .frame(width: 64 * scale, alignment: .trailing)
+                .frame(width: 72 * scale, alignment: .trailing)
             if isLink, let url = URL(string: "mailto:\(value)") {
                 Link(value, destination: url)
-                    .font(.system(size: 11.5 * scale))
+                    .font(.system(size: 13 * scale))
             } else {
                 Text(value)
-                    .font(.system(size: 11.5 * scale))
+                    .font(.system(size: 13 * scale))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
